@@ -18,6 +18,7 @@ void usage() {
                "  romtool info    <dump> [--profile P]...\n"
                "  romtool extract <dump> <outdir> [--update UPD] [--profile P]... [--allow-unknown]\n"
                "  romtool profile <dump> [--update UPD]   (prints a profile for your own dump)\n"
+               "  romtool elf     <dump> <out.elf> [--update UPD]   (local analysis container)\n"
                "  romtool ls      <dump>\n"
                "  romtool cat     <dump> <romfs-path>   (writes to stdout)\n",
                stderr);
@@ -195,6 +196,67 @@ int cmdProfile(const Args &a) {
     return 0;
 }
 
+// Wraps the decompressed code image in an ELF32-ARM file (one PT_LOAD per segment) so standard
+// reverse-engineering tools can load it. Local use only; the output is game data (see policy).
+int cmdElf(const Args &a) {
+    if (a.pos.size() != 2) {
+        usage();
+        return 2;
+    }
+    Loaded l(a);
+    ExHeader eh = ExHeader::parse(l.exhRaw);
+    struct Seg {
+        uint32_t addr, filesz, memsz, flags;
+    };
+    auto pg = [](uint32_t p) { return p * 0x1000u; };
+    // .code holds text, ro, data back to back, each padded to whole pages except the last.
+    Seg segs[3] = {{eh.text.address, eh.text.size, pg(eh.text.pages), 5},
+                   {eh.ro.address, eh.ro.size, pg(eh.ro.pages), 4},
+                   {eh.data.address, eh.data.size, pg(eh.data.pages) + eh.bssSize, 6}};
+    const size_t imgOffs[3] = {0, pg(eh.text.pages), size_t(pg(eh.text.pages)) + pg(eh.ro.pages)};
+    Bytes elf(0x34 + 3 * 0x20, 0);
+    auto p16 = [&](size_t o, uint16_t v) {
+        elf[o] = uint8_t(v);
+        elf[o + 1] = uint8_t(v >> 8);
+    };
+    auto p32 = [&](size_t o, uint32_t v) {
+        for (int i = 0; i < 4; i++)
+            elf[o + i] = uint8_t(v >> (8 * i));
+    };
+    const uint8_t ident[] = {0x7f, 'E', 'L', 'F', 1, 1, 1};
+    std::memcpy(elf.data(), ident, sizeof ident);
+    p16(16, 2);
+    p16(18, 40);
+    p32(20, 1);
+    p32(24, eh.text.address);
+    p32(28, 0x34);
+    p16(40, 0x34);
+    p16(42, 0x20);
+    p16(44, 3);
+    Bytes body;
+    for (int i = 0; i < 3; i++) {
+        if (imgOffs[i] + segs[i].filesz > l.code.size())
+            throw Error("segment exceeds code image");
+        size_t ph = 0x34 + i * 0x20;
+        p32(ph, 1);
+        p32(ph + 4, uint32_t(elf.size() + body.size()));
+        p32(ph + 8, segs[i].addr);
+        p32(ph + 12, segs[i].addr);
+        p32(ph + 16, segs[i].filesz);
+        p32(ph + 20, std::max(segs[i].memsz, segs[i].filesz));
+        p32(ph + 24, segs[i].flags);
+        p32(ph + 28, 0x1000);
+        body.insert(body.end(), l.code.begin() + long(imgOffs[i]),
+                    l.code.begin() + long(imgOffs[i] + segs[i].filesz));
+        while (body.size() % 16)
+            body.push_back(0);
+    }
+    elf.insert(elf.end(), body.begin(), body.end());
+    writeFile(a.pos[1], elf);
+    std::printf("wrote %s (%zu bytes); local use only\n", a.pos[1].c_str(), elf.size());
+    return 0;
+}
+
 int cmdLs(const Args &a) {
     if (a.pos.size() != 1) {
         usage();
@@ -244,6 +306,8 @@ int main(int argc, char **argv) {
             return cmdExtract(a);
         if (cmd == "profile")
             return cmdProfile(a);
+        if (cmd == "elf")
+            return cmdElf(a);
         if (cmd == "ls")
             return cmdLs(a);
         if (cmd == "cat")
