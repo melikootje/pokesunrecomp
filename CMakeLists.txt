@@ -1,0 +1,25 @@
+cmake_minimum_required(VERSION 3.20)
+project(pokesunrecomp LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(POKE_BUILD_TOOLS "Build host tooling (extractor, recompiler)" ON)
+option(POKE_BUILD_RUNTIME "Build the HLE runtime" ON)
+option(POKE_BUILD_TESTS "Build tests" ON)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+  add_compile_options(-Wall -Wextra -Werror)
+endif()
+
+if(POKE_BUILD_TESTS)
+  enable_testing()
+endif()
+if(POKE_BUILD_TOOLS AND NOT ANDROID)
+  add_subdirectory(tools)
+endif()
+if(POKE_BUILD_RUNTIME)
+  add_subdirectory(runtime)
+endif()

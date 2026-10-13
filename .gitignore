@@ -1,0 +1,26 @@
+# Game data: never commit (see docs/legal-policy.md)
+*.cci
+*.3ds
+*.cia
+*.cxi
+*.cfa
+*.app
+*.7z
+*.zip
+*.sav
+*.bin
+exefs/
+romfs/
+extracted/
+generated/
+recompiled/
+golden/
+# Build outputs
+build/
+build-*/
+cmake-build-*/
+.gradle/
+*.so
+*.o
+.DS_Store
+.idea/

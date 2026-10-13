@@ -1,0 +1,31 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  host:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ninja
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update && sudo apt-get install -y ninja-build; else brew install ninja; fi
+      - name: Configure
+        run: cmake -S . -B build -G Ninja
+      - name: Build (warnings are errors)
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse committed game data
+        run: |
+          if git ls-files | grep -Ei '\.(cci|3ds|cia|cxi|cfa|7z)$|(^|/)(exefs|romfs)/'; then
+            echo "Game data must never be committed"; exit 1; fi
+      - name: clang-format check
+        run: |
+          sudo apt-get update && sudo apt-get install -y clang-format
+          git ls-files '*.cpp' '*.h' | xargs -r clang-format --dry-run -Werror
