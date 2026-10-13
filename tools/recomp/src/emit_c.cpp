@@ -638,7 +638,7 @@ struct Emitter {
             line(std::string("  int64_t r = ") + (i.op == Op::Smlad ? "p1 + p2;" : "p1 - p2;"));
             if (i.acc)
                 line(fmt("  r += (int32_t)r%u;", i.rn));
-            line(fmt("  if (r != (int32_t)r) c->q = 1; r%u = (uint32_t)r; }", i.rd));
+            line(fmt("  if (r != (int32_t)r) { c->q = 1; } r%u = (uint32_t)r; }", i.rd));
             break;
         }
         case Op::Smlald:
@@ -678,7 +678,7 @@ struct Emitter {
             if (i.op == Op::Smlaw) {
                 line("{ int64_t r = (((int64_t)(int32_t)" + fmt("r%u", i.rm) + ") * " + b + ") >> 16;");
                 if (i.acc)
-                    line(fmt("  r += (int32_t)r%u; if (r != (int32_t)r) c->q = 1;", i.rn));
+                    line(fmt("  r += (int32_t)r%u; if (r != (int32_t)r) { c->q = 1; }", i.rn));
                 line(fmt("  r%u = (uint32_t)r; }", i.rd));
                 break;
             }
@@ -691,7 +691,7 @@ struct Emitter {
             }
             line("{ int64_t r = " + a + " * " + b + ";");
             if (i.acc)
-                line(fmt("  r += (int32_t)r%u; if (r != (int32_t)r) c->q = 1;", i.rn));
+                line(fmt("  r += (int32_t)r%u; if (r != (int32_t)r) { c->q = 1; }", i.rn));
             line(fmt("  r%u = (uint32_t)r; }", i.rd));
             break;
         }
