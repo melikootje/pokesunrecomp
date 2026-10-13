@@ -71,6 +71,14 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i + 1 < nums.size(); i += 2)
             pools.push_back({nums[i], nums[i + 1]});
     }
+    if (argc >=
+        7) { // extra entries: lines of "<hex addr> <0|1 thumb>" (e.g. logged interpreter-fallback run starts)
+        std::ifstream f(argv[6]);
+        std::string a;
+        int th;
+        while (f >> a >> th)
+            entries.push_back({uint32_t(std::stoul(a, nullptr, 16)), th != 0});
+    }
     recomp::DiscoverOptions opt;
     opt.isData = [&](uint32_t a) {
         size_t lo = 0, hi = pools.size();
