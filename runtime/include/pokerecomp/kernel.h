@@ -111,6 +111,9 @@ class Kernel {
     GuestMemory &memory() { return gm_; }
     Handle createEvent(bool sticky);
     Handle createMutex(bool locked);
+    // Creates a session handle backed by a kernel-owned service object (e.g. an open file).
+    Handle createSession(std::unique_ptr<Service> svc);
+    // Releases a service object created by createSession (called when the guest closes the file, etc.).
     Handle createSemaphore(int32_t initial, int32_t max);
     // Ends the run with RunResult::Break and records why (used for fatal errors reported by the guest).
     void stopWithReason(uint32_t reason, const std::string &message);
@@ -119,7 +122,7 @@ class Kernel {
     uint8_t *guestPtr(uint32_t addr) { return gm_.base() + addr; }
     void signalEvent(Handle h);
     // Signals `h` after `delayNs` of virtual time (models system services that notify asynchronously).
-    void scheduleSignal(Handle h, uint64_t delayNs);
+    void scheduleSignal(Handle h, uint64_t delayNs, uint64_t periodNs = 0);
     uint32_t currentThreadId() const;
     // One line per live thread describing its state and what it waits for (deadlock diagnostics).
     std::vector<std::string> describeThreads() const;

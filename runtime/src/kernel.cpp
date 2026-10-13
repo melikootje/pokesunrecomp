@@ -125,6 +125,7 @@ struct Kernel::Impl {
     uint64_t readyCounter = 0;
     std::map<std::string, std::unique_ptr<Service>> services;
     std::vector<std::unique_ptr<Service>> adhoc;
+    std::vector<std::unique_ptr<Service>> owned; // services created through createSession
     std::set<std::pair<std::string, uint32_t>> seenUnimpl;
     std::shared_ptr<Process> process = std::make_shared<Process>();
     std::shared_ptr<ResLimit> resLimit = std::make_shared<ResLimit>();
@@ -133,7 +134,12 @@ struct Kernel::Impl {
     std::map<uint32_t, uint32_t> allocs;
     uint32_t tlsMapped = 0;
     KernelConfig cfg;
-    std::vector<std::pair<uint64_t, Handle>> delayedSignals; // (fire tick, event handle)
+    struct Delayed {
+        uint64_t fire;
+        Handle handle;
+        uint64_t period;
+    };
+    std::vector<Delayed> delayedSignals;
 
     explicit Impl(Kernel &kk) : k(kk) {}
     bool handleSvc(Thread *t); // runs the pending SVC; false when the thread blocked/exited
@@ -289,11 +295,17 @@ struct Kernel::Impl {
 
     void processTimers() {
         for (size_t i = 0; i < delayedSignals.size();) {
-            if (delayedSignals[i].first <= k.now_) {
-                auto o = get(delayedSignals[i].second);
+            if (delayedSignals[i].fire <= k.now_) {
+                auto o = get(delayedSignals[i].handle);
                 if (o && o->type == T::Event)
                     static_cast<Event &>(*o).signaled = true;
-                delayedSignals.erase(delayedSignals.begin() + long(i));
+                if (delayedSignals[i].period) { // periodic: skip missed periods instead of firing a burst
+                    Delayed &d = delayedSignals[i];
+                    d.fire += d.period * (1 + (k.now_ - d.fire) / d.period);
+                    i++;
+                } else {
+                    delayedSignals.erase(delayedSignals.begin() + long(i));
+                }
             } else {
                 i++;
             }
@@ -315,7 +327,7 @@ struct Kernel::Impl {
     uint64_t earliestEvent() {
         uint64_t best = UINT64_MAX;
         for (auto &d : delayedSignals)
-            best = std::min(best, d.first);
+            best = std::min(best, d.fire);
         for (auto &t : threads)
             if (t->state == TState::Waiting)
                 best = std::min(best, t->wakeAt);
@@ -590,6 +602,12 @@ Handle Kernel::createEvent(bool sticky) {
     return impl_->add(e);
 }
 
+Handle Kernel::createSession(std::unique_ptr<Service> svc) {
+    Service *raw = svc.get();
+    impl_->owned.push_back(std::move(svc));
+    return impl_->newSession(raw);
+}
+
 Handle Kernel::createMutex(bool locked) {
     auto m = std::make_shared<Mutex>();
     (void)locked; // services hand out unlocked mutexes; ownership starts with the first guest acquirer
@@ -609,8 +627,8 @@ void Kernel::stopWithReason(uint32_t reason, const std::string &message) {
     impl_->breakHit = true;
 }
 
-void Kernel::scheduleSignal(Handle h, uint64_t delayNs) {
-    impl_->delayedSignals.push_back({now_ + nsToTicks(delayNs), h});
+void Kernel::scheduleSignal(Handle h, uint64_t delayNs, uint64_t periodNs) {
+    impl_->delayedSignals.push_back({now_ + nsToTicks(delayNs), h, nsToTicks(periodNs)});
 }
 
 void Kernel::signalEvent(Handle h) {

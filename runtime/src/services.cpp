@@ -1,7 +1,9 @@
 #include "pokerecomp/services.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <set>
 #include <vector>
 
@@ -163,6 +165,132 @@ class PtmService : public Service {
     const char *name_;
 };
 
+// ---------------------------------------------------------------------------- dsp::DSP (stub until the audio
+// HLE, #13)
+class DspService : public Service {
+  public:
+    explicit DspService(Kernel &k) : k_(k) {
+        // DSP shared memory (256 KiB) as the application sees it
+        k_.memory().map(kDspRam, 0x40000, GuestMemory::Read | GuestMemory::Write);
+    }
+    const char *name() const override { return "dsp::DSP"; }
+    void handle(IpcRequest &r) override {
+        switch (r.header()) {
+        case 0x001100C2: { // LoadComponent(size, prog mask, data mask, buffer) -> loaded, buffer
+            const uint32_t desc = r.cmd[4], ptr = r.cmd[5];
+            r.reply(2, 2, kresult::Success);
+            r.cmd[2] = 1;
+            r.cmd[3] = desc;
+            r.cmd[4] = ptr;
+            break;
+        }
+        case 0x00120000: // UnloadComponent
+            r.reply(1, 0, kresult::Success);
+            break;
+        case 0x00150082: // RegisterInterruptEvents(interrupt, channel, event handle)
+            events_[(r.cmd[1] << 8) | r.cmd[2]] = r.cmd[4];
+            r.reply(1, 0, kresult::Success);
+            break;
+        case 0x00160000: // GetSemaphoreEventHandle -> event handle
+            if (!sem_)
+                sem_ = k_.createEvent(false);
+            r.reply(1, 2, kresult::Success);
+            r.cmd[2] = 0;
+            r.cmd[3] = sem_;
+            break;
+        case 0x00170040: // SetSemaphoreMask(mask)
+            r.reply(1, 0, kresult::Success);
+            break;
+        case 0x00070040: // SetSemaphore(value): the DSP acknowledges immediately
+            if (sem_)
+                k_.signalEvent(sem_);
+            r.reply(1, 0, kresult::Success);
+            break;
+        case 0x000C0040: // ConvertProcessAddressFromDspDram(dsp word address) -> process address
+            r.reply(2, 0, kresult::Success);
+            r.cmd[2] = kDspRam + (r.cmd[1] << 1);
+            break;
+        case 0x000D0082: { // WriteProcessPipe(channel, size, buffer)
+            const uint32_t channel = r.cmd[1], size = r.cmd[2], ptr = r.cmd[4];
+            if (channel == 2 && size >= 4)
+                onAudioPipeWrite(k_.guestPtr(ptr), size);
+            r.reply(1, 0, kresult::Success);
+            break;
+        }
+        case 0x000F0080: // GetPipeReadableSize(channel, peer)
+            r.reply(2, 0, kresult::Success);
+            r.cmd[2] = r.cmd[1] == 2 ? uint32_t(pipe_.size()) : 0;
+            break;
+        case 0x001000C0:   // ReadPipeIfPossible(channel, peer, size): data goes to the thread's static buffer
+        case 0x000E00C0: { // ReadPipe(channel, peer, size)
+            const uint32_t channel = r.cmd[1], size = r.cmd[3];
+            const uint32_t ptr = r.cmd[65]; // static buffer pointer at TLS + 0x184
+            uint32_t n = 0;
+            if (channel == 2 && ptr) {
+                n = std::min<uint32_t>(size, uint32_t(pipe_.size()));
+                std::memcpy(k_.guestPtr(ptr), pipe_.data(), n);
+                pipe_.erase(pipe_.begin(), pipe_.begin() + n);
+            }
+            r.reply(2, 2, kresult::Success);
+            r.cmd[2] = n;
+            r.cmd[3] = (n << 14) | 2;
+            r.cmd[4] = ptr;
+            break;
+        }
+        case 0x00020040: // RecvDataIsReady(register) -> ready
+            r.reply(2, 0, kresult::Success);
+            r.cmd[2] = 1;
+            break;
+        case 0x00010040: // RecvData(register) -> value
+        case 0x001F0000: // GetHeadphoneStatus -> not connected
+            r.reply(2, 0, kresult::Success);
+            r.cmd[2] = 0;
+            break;
+        case 0x00130082: // InvalidateDataCache(addr, size, process handle)
+        case 0x00140082: // FlushDataCache(addr, size, process handle)
+            r.reply(1, 0, kresult::Success);
+            break;
+        default:
+            if (seen_.insert(r.header()).second)
+                std::fprintf(stderr, "[dsp::DSP] stub for command %08x\n", r.header());
+            r.reply(2, 0, kresult::Success);
+            r.cmd[2] = 0;
+            break;
+        }
+    }
+
+  private:
+    static constexpr uint32_t kDspRam = 0x1FF00000;
+    // Audio pipe: state-change commands from the application. Initialize answers with the addresses of the
+    // shared-memory structures (approximate layout; the real mixer arrives with issue #13) and starts the
+    // frame interrupt (every 4.096 ms of virtual time).
+    void onAudioPipeWrite(const uint8_t *data, uint32_t size) {
+        (void)size;
+        const uint16_t cmd = uint16_t(data[0] | data[1] << 8);
+        if (cmd == 0) { // Initialize
+            const std::vector<uint16_t> resp = {0x000F, 0x8000, 0x8040, 0x8080, 0x80C0, 0x8100,
+                                                0x8140, 0x8180, 0x81C0, 0x8200, 0x8240, 0x8280,
+                                                0x82C0, 0x8300, 0x8340, 0x8380};
+            pipe_.assign(reinterpret_cast<const uint8_t *>(resp.data()),
+                         reinterpret_cast<const uint8_t *>(resp.data()) + resp.size() * 2);
+            auto it = events_.find((2u << 8) | 2u);
+            if (it != events_.end()) {
+                k_.signalEvent(it->second);
+                if (!framesStarted_) {
+                    framesStarted_ = true;
+                    k_.scheduleSignal(it->second, 4096000, 4096000);
+                }
+            }
+        }
+    }
+    Kernel &k_;
+    Handle sem_ = 0;
+    bool framesStarted_ = false;
+    std::map<uint32_t, Handle> events_;
+    std::vector<uint8_t> pipe_;
+    std::set<uint32_t> seen_;
+};
+
 // ---------------------------------------------------------------------------- err:f (fatal error display)
 class ErrService : public Service {
   public:
@@ -198,6 +326,7 @@ void registerDefaultServices(Kernel &k, const ServiceOptions &opt) {
     k.registerService(std::make_unique<CfgService>("cfg:i", opt, k));
     k.registerService(std::make_unique<PtmService>("ptm:u"));
     k.registerService(std::make_unique<SuccessService>("ndm:u", k));
+    k.registerService(std::make_unique<DspService>(k));
     k.registerService(std::make_unique<ErrService>(k, opt.logFatalErrors));
 }
 

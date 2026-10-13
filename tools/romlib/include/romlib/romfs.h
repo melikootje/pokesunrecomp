@@ -23,9 +23,13 @@ class Romfs {
     // Reads len bytes from `path` at `off` (clamped checks: out-of-range throws).
     Bytes read(const std::string &path, uint64_t off, size_t len) const;
     Bytes readAll(const std::string &path) const;
+    // IVFC level 3 (the actual RomFS data, starting with its 0x28-byte header) within the region.
+    uint64_t level3Offset() const { return level3Off_; }
+    uint64_t level3Size() const { return level3Size_; }
 
   private:
     const Source *region_ = nullptr;
+    uint64_t level3Off_ = 0, level3Size_ = 0;
     uint64_t dataBase_ = 0; // region-relative offset of level3 file data
     std::map<std::string, RomfsFile> files_;
     std::vector<std::string> dirs_;

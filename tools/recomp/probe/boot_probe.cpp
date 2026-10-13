@@ -3,6 +3,7 @@
 // it links is derived from game data and must not be committed.
 //
 //   boot_probe <code.bin> [maxInsns] [lenient]
+#include <algorithm>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
@@ -17,6 +18,7 @@
 #include "pokerecomp/guest_memory.h"
 #include "pokerecomp/kernel.h"
 #include "pokerecomp/services.h"
+#include "romlib/dump.h"
 
 extern "C" {
 typedef struct {
@@ -66,12 +68,60 @@ int main(int argc, char **argv) {
         b.thumb = rc_blocks[k].thumb != 0;
         disp.registerBlock(b);
     }
+    // Optional RomFS from the user's own dump (argv[4]), served lazily through romlib.
+    struct RomBackend : FsBackend {
+        std::unique_ptr<romlib::FileSource> src;
+        std::unique_ptr<romlib::Dump> dump;
+        std::unique_ptr<romlib::SubSource> region;
+        std::unique_ptr<romlib::Romfs> fs;
+        // The RomFS archive exposes IVFC level 3 (starting with its 0x28-byte header), not the IVFC header.
+        bool rawRomfsSize(uint64_t *size) override {
+            if (!fs)
+                return false;
+            *size = fs->level3Size();
+            return true;
+        }
+        int64_t rawRomfsRead(uint64_t off, uint32_t size, void *dst) override {
+            if (!fs || off >= fs->level3Size())
+                return 0;
+            const uint32_t n = uint32_t(std::min<uint64_t>(size, fs->level3Size() - off));
+            region->read(fs->level3Offset() + off, dst, n);
+            return n;
+        }
+        bool romfsFileSize(const std::string &p, uint64_t *size) override {
+            if (!fs || !fs->exists(p))
+                return false;
+            *size = fs->fileSize(p);
+            return true;
+        }
+        int64_t romfsRead(const std::string &p, uint64_t off, uint32_t size, void *dst) override {
+            if (!fs || !fs->exists(p))
+                return -1;
+            const uint64_t total = fs->fileSize(p);
+            if (off >= total)
+                return 0;
+            const uint32_t n = uint32_t(std::min<uint64_t>(size, total - off));
+            const auto b = fs->read(p, off, n);
+            std::memcpy(dst, b.data(), b.size());
+            return int64_t(b.size());
+        }
+    };
+    auto rom = std::make_shared<RomBackend>();
+    if (argc > 4) {
+        rom->src = std::make_unique<romlib::FileSource>(argv[4]);
+        rom->dump = std::make_unique<romlib::Dump>(*rom->src);
+        rom->region = std::make_unique<romlib::SubSource>(rom->dump->romfsRegion());
+        rom->fs = std::make_unique<romlib::Romfs>(romlib::Romfs::parse(*rom->region));
+        std::printf("RomFS: %zu files available\n", rom->fs->listFiles().size());
+    }
     Kernel kernel(gm, disp);
+    disp.setTraceDepth(48);
     kernel.setUnimplementedPolicy(lenient ? UnimplementedPolicy::ReturnSuccess
                                           : UnimplementedPolicy::ReturnError);
     kernel.setLog([](const std::string &s) { std::printf("[kernel] %s\n", s.c_str()); });
     kernel.configure(KernelConfig{});
     registerDefaultServices(kernel);
+    registerFsService(kernel, rom);
     kernel.createMainThread(kText, kStackTop, 0);
     std::printf("registered %zu blocks; policy for unimplemented IPC: %s\n", disp.blockCount(),
                 lenient ? "success" : "error");
@@ -80,8 +130,12 @@ int main(int argc, char **argv) {
     static const char *names[] = {
         "all threads exited", "deadlock", "instruction limit", "process exit", "break", "trap", "fault"};
     std::printf("result: %s\n", names[int(rr)]);
-    if (rr == RunResult::Fault)
-        std::printf("  guest fault at %08x\n", kernel.lastFault().address);
+    if (rr == RunResult::Fault) {
+        std::printf("  guest fault at %08x\n  recent block pcs:", kernel.lastFault().address);
+        for (uint32_t pc : disp.recentPcs())
+            std::printf(" %08x", pc & ~1u);
+        std::printf("\n");
+    }
     if (rr == RunResult::Break)
         std::printf("  svcBreak reason %u\n", kernel.breakReason());
 

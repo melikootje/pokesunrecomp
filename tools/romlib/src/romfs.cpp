@@ -66,6 +66,8 @@ Romfs Romfs::parse(const Source &region) {
     Romfs r;
     r.region_ = &region;
     r.dataBase_ = l3 + dataOff;
+    r.level3Off_ = l3;
+    r.level3Size_ = l3Size;
 
     std::set<uint32_t> seenDir, seenFile;
     // Iterative walk: (dir entry offset, path prefix)

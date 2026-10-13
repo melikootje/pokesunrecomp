@@ -58,6 +58,13 @@ class Dispatcher {
     // ctx.svc/ctx.svc_pending for the caller (HLE) to service and clear.
     StopReason run(RcCtx &ctx, uint64_t maxSteps);
 
+    // Debug: remember the last `n` dispatched pcs (bit 0 = Thumb); 0 disables.
+    void setTraceDepth(size_t n) {
+        ring_.assign(n, 0);
+        ringPos_ = 0;
+    }
+    std::vector<uint32_t> recentPcs() const; // oldest first
+
     const Coverage &coverage() const { return cov_; }
     void resetCoverage();
     // Guest pcs (bit 0 = Thumb) executed by the fallback interpreter and how often.
@@ -71,6 +78,8 @@ class Dispatcher {
     std::unordered_map<uint32_t, uint64_t> fallback_;
     Coverage cov_;
     uint64_t invalidated_ = 0;
+    std::vector<uint32_t> ring_;
+    size_t ringPos_ = 0;
     uint32_t halt_ = 0;
     bool haltSet_ = false;
 };

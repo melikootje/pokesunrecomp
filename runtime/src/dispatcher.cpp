@@ -64,12 +64,26 @@ std::vector<std::pair<uint32_t, uint64_t>> Dispatcher::topFallbacks(size_t n) co
     return v;
 }
 
+std::vector<uint32_t> Dispatcher::recentPcs() const {
+    std::vector<uint32_t> out;
+    for (size_t i = 0; i < ring_.size(); i++) {
+        const uint32_t v = ring_[(ringPos_ + i) % ring_.size()];
+        if (v)
+            out.push_back(v);
+    }
+    return out;
+}
+
 StopReason Dispatcher::run(RcCtx &c, uint64_t maxSteps) {
     HostMemory mem(c.mem);
     for (uint64_t step = 0; step < maxSteps; step++) {
         if (haltSet_ && c.r[15] == halt_)
             return StopReason::Halt;
         const uint32_t k = key(c.r[15], c.thumb != 0);
+        if (!ring_.empty()) {
+            ring_[ringPos_] = k;
+            ringPos_ = (ringPos_ + 1) % ring_.size();
+        }
         auto it = blocks_.find(k);
         if (it != blocks_.end()) {
             it->second.fn(&c);
