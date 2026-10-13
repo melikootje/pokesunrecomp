@@ -1,5 +1,6 @@
 add_subdirectory(romlib)
 add_subdirectory(romtool)
+add_subdirectory(recomp)
 if(POKE_BUILD_TESTS)
   add_subdirectory(tests)
 endif()
