@@ -25,3 +25,6 @@ cmake-build-*/
 .DS_Store
 .idea/
 *.elf
+# Analysis metadata is committed; raw Ghidra projects/exports are not
+ghproj/
+*.tsv
