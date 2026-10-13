@@ -740,9 +740,9 @@ std::string emitPrelude() {
 std::string emitBlockC(const std::vector<Insn> &insns, const std::string &name, const EmitOptions &opt) {
     // Backward flag liveness. A conditional instruction cannot kill flags (it may not execute).
     std::vector<uint8_t> liveAfter(insns.size());
-    uint8_t live = opt.eliminateDeadFlags ? opt.liveOut : FlagAll;
+    uint8_t live = opt.eliminateDeadFlags ? opt.liveOut : uint8_t(FlagAll);
     for (size_t k = insns.size(); k-- > 0;) {
-        liveAfter[k] = opt.eliminateDeadFlags ? live : FlagAll;
+        liveAfter[k] = opt.eliminateDeadFlags ? live : uint8_t(FlagAll);
         const Insn &i = insns[k];
         const uint8_t kills = i.cond == 14 ? i.writesFlags : 0;
         live = uint8_t((live & ~kills) | i.readsFlags);
