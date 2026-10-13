@@ -3,6 +3,7 @@
 
 #include "fixtures.h"
 #include "romlib/blz.h"
+#include "romlib/cro.h"
 #include "romlib/dump.h"
 #include "romlib/profile.h"
 #include "romlib/sha256.h"
@@ -254,6 +255,55 @@ static void testOverlay() {
     THROWS(o.readAll("/missing"));
 }
 
+static void testCro() {
+    Bytes b(0x300, 0);
+    auto w = [&](uint32_t o, uint32_t v) {
+        for (int i = 0; i < 4; i++)
+            b[o + i] = uint8_t(v >> (8 * i));
+    };
+    std::memcpy(&b[0x80], "CRO0", 4);
+    w(0x90, 0x300);
+    w(0x94, 0x40);
+    w(0xB0, 0x200);
+    w(0xB4, 0x20);
+    w(0xC0, 0x2F0);
+    memcpy(&b[0x2F0], "mod", 4);
+    w(0xC8, 0x140); // segment table
+    w(0xCC, 2);
+    w(0x140, 0x200);
+    w(0x144, 0x20);
+    w(0x148, 0);
+    w(0x14C, 0);
+    w(0x150, 0x40);
+    w(0x154, 3);
+    w(0x128, 0x160); // internal relocations
+    w(0x12C, 1);
+    w(0x160, (0x10u << 4) | 0);
+    b[0x164] = 2;
+    w(0x168, 0x20);
+    Cro c = Cro::parse(b);
+    CHECK(!c.isCrs && c.name() == "mod");
+    CHECK(c.segments.size() == 2 && c.segments[1].type == 3 && c.segments[1].size == 0x40);
+    CHECK(c.internalRelocs.size() == 1 && c.internalRelocs[0].type == 2 && c.internalRelocs[0].value == 0x20);
+    CHECK(c.internalRelocs[0].target == 0x100);
+    w(0xCC, 0x10000000); // segment table far beyond the file
+    bool threw = false;
+    try {
+        Cro::parse(b);
+    } catch (const Error &) {
+        threw = true;
+    }
+    CHECK(threw);
+    b[0x80] = 'X';
+    threw = false;
+    try {
+        Cro::parse(b);
+    } catch (const Error &) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 int main() {
     struct T {
         const char *n;
@@ -269,6 +319,7 @@ int main() {
         {"lazy 4GiB", testLazyFourGiB},
         {"profiles", testProfiles},
         {"overlay", testOverlay},
+        {"cro", testCro},
     };
     for (auto &t : tests) {
         int before = g_fail;

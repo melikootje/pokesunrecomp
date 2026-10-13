@@ -3,8 +3,10 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sys/stat.h>
 
+#include "romlib/cro.h"
 #include "romlib/dump.h"
 #include "romlib/profile.h"
 #include "romlib/sha256.h"
@@ -257,6 +259,60 @@ int cmdElf(const Args &a) {
     return 0;
 }
 
+// Prints structure and counts of CRO/CRS modules in the RomFS (no payload bytes).
+int cmdCro(const Args &a) {
+    if (a.pos.empty()) {
+        usage();
+        return 2;
+    }
+    FileSource src(a.pos[0]);
+    Dump d(src);
+    SubSource region = d.romfsRegion();
+    Romfs fs = Romfs::parse(region);
+    std::map<unsigned, size_t> relTypes[3];
+    size_t modules = 0, bad = 0;
+    for (const auto &f : fs.listFiles()) {
+        const bool cro = f.size() > 4 && f.compare(f.size() - 4, 4, ".cro") == 0;
+        const bool crs = f.size() > 4 && f.compare(f.size() - 4, 4, ".crs") == 0;
+        if (!cro && !crs)
+            continue;
+        try {
+            Cro c = Cro::parse(fs.readAll(f));
+            modules++;
+            for (auto &r : c.internalRelocs)
+                relTypes[0][r.type]++;
+            for (auto &r : c.externalRelocs)
+                relTypes[1][r.type]++;
+            for (auto &r : c.staticRelocs)
+                relTypes[2][r.type]++;
+            if (a.pos.size() > 1 && f.find(a.pos[1]) != std::string::npos) {
+                std::printf("%s '%s' size=%u code=%u+%u data=%u+%u bss=%u segs=%zu int=%zu ext=%zu "
+                            "static=%zu imports=%zu named=%zu indexed=%zu anon=%zu expN=%zu expI=%zu\n",
+                            f.c_str(), c.name().c_str(), c.fileSize, c.codeOffset, c.codeSize, c.dataOffset,
+                            c.dataSize, c.bssSize, c.segments.size(), c.internalRelocs.size(),
+                            c.externalRelocs.size(), c.staticRelocs.size(), c.importModules.size(),
+                            c.namedImports.size(), c.indexedImports.size(), c.anonymousImports.size(),
+                            c.namedExports.size(), c.indexedExports.size());
+                for (size_t k = 0; k < c.segments.size(); k++)
+                    std::printf("  seg %zu: offset=%08x size=%08x type=%u\n", k, c.segments[k].offset,
+                                c.segments[k].size, c.segments[k].type);
+            }
+        } catch (const Error &e) {
+            bad++;
+            std::printf("%s: %s\n", f.c_str(), e.what());
+        }
+    }
+    std::printf("modules parsed=%zu failed=%zu\n", modules, bad);
+    static const char *names[] = {"internal", "external", "static"};
+    for (int t = 0; t < 3; t++) {
+        std::printf("%s relocation types:", names[t]);
+        for (auto &kv : relTypes[t])
+            std::printf(" %u:%zu", kv.first, kv.second);
+        std::printf("\n");
+    }
+    return 0;
+}
+
 int cmdLs(const Args &a) {
     if (a.pos.size() != 1) {
         usage();
@@ -308,6 +364,8 @@ int main(int argc, char **argv) {
             return cmdProfile(a);
         if (cmd == "elf")
             return cmdElf(a);
+        if (cmd == "cro")
+            return cmdCro(a);
         if (cmd == "ls")
             return cmdLs(a);
         if (cmd == "cat")
