@@ -133,6 +133,7 @@ struct Kernel::Impl {
     std::map<uint32_t, uint32_t> allocs;
     uint32_t tlsMapped = 0;
     KernelConfig cfg;
+    std::vector<std::pair<uint64_t, Handle>> delayedSignals; // (fire tick, event handle)
 
     explicit Impl(Kernel &kk) : k(kk) {}
     bool handleSvc(Thread *t); // runs the pending SVC; false when the thread blocked/exited
@@ -287,6 +288,16 @@ struct Kernel::Impl {
     }
 
     void processTimers() {
+        for (size_t i = 0; i < delayedSignals.size();) {
+            if (delayedSignals[i].first <= k.now_) {
+                auto o = get(delayedSignals[i].second);
+                if (o && o->type == T::Event)
+                    static_cast<Event &>(*o).signaled = true;
+                delayedSignals.erase(delayedSignals.begin() + long(i));
+            } else {
+                i++;
+            }
+        }
         for (auto &kv : handles) {
             if (kv.second->type != T::Timer)
                 continue;
@@ -303,6 +314,8 @@ struct Kernel::Impl {
 
     uint64_t earliestEvent() {
         uint64_t best = UINT64_MAX;
+        for (auto &d : delayedSignals)
+            best = std::min(best, d.first);
         for (auto &t : threads)
             if (t->state == TState::Waiting)
                 best = std::min(best, t->wakeAt);
@@ -416,7 +429,11 @@ struct Kernel::Impl {
         t->state = TState::Ready;
         t->readySeq = ++readyCounter;
         threads.push_back(t);
-        trace("create " + tname(t.get()) + " prio " + std::to_string(prio));
+        {
+            char eb[48];
+            std::snprintf(eb, sizeof eb, " entry %08x arg %08x", entry, arg);
+            trace("create " + tname(t.get()) + " prio " + std::to_string(prio) + eb);
+        }
         return t.get();
     }
 
@@ -573,6 +590,29 @@ Handle Kernel::createEvent(bool sticky) {
     return impl_->add(e);
 }
 
+Handle Kernel::createMutex(bool locked) {
+    auto m = std::make_shared<Mutex>();
+    (void)locked; // services hand out unlocked mutexes; ownership starts with the first guest acquirer
+    return impl_->add(m);
+}
+
+Handle Kernel::createSemaphore(int32_t initial, int32_t max) {
+    auto sm = std::make_shared<Semaphore>();
+    sm->count = initial;
+    sm->max = max;
+    return impl_->add(sm);
+}
+
+void Kernel::stopWithReason(uint32_t reason, const std::string &message) {
+    breakReason_ = reason;
+    stopMessage_ = message;
+    impl_->breakHit = true;
+}
+
+void Kernel::scheduleSignal(Handle h, uint64_t delayNs) {
+    impl_->delayedSignals.push_back({now_ + nsToTicks(delayNs), h});
+}
+
 void Kernel::signalEvent(Handle h) {
     auto o = impl_->get(h);
     if (o && o->type == T::Event)
@@ -581,6 +621,41 @@ void Kernel::signalEvent(Handle h) {
 }
 
 uint32_t Kernel::currentThreadId() const { return impl_->current ? impl_->current->id : 0; }
+
+std::vector<std::string> Kernel::describeThreads() const {
+    static const char *typeNames[] = {"thread",  "mutex",    "semaphore", "event",   "timer",
+                                      "arbiter", "memblock", "session",   "process", "reslimit"};
+    std::vector<std::string> out;
+    for (auto &t : impl_->threads) {
+        if (t->state == TState::Dead)
+            continue;
+        std::string line = "T" + std::to_string(t->id) + " prio " + std::to_string(t->prio) + " ";
+        if (t->state == TState::Ready)
+            line += "ready";
+        else {
+            line += t->waitKind == WaitKind::Sleep     ? "sleeping"
+                    : t->waitKind == WaitKind::Arbiter ? "arbitrating 0x"
+                                                       : "waiting on";
+            if (t->waitKind == WaitKind::Arbiter) {
+                char b[16];
+                std::snprintf(b, sizeof b, "%08x", t->arbAddr);
+                line += b;
+            }
+            for (auto &o : t->waitObjs) {
+                for (auto &kv : impl_->handles)
+                    if (kv.second == o) {
+                        char b[48];
+                        std::snprintf(b, sizeof b, " %s#%x", typeNames[int(o->type)], kv.first);
+                        line += b;
+                    }
+            }
+            if (t->wakeAt != UINT64_MAX)
+                line += " (timeout)";
+        }
+        out.push_back(line);
+    }
+    return out;
+}
 
 const RcCtx *Kernel::threadContext(uint32_t id) const {
     for (auto &t : impl_->threads)
@@ -875,6 +950,12 @@ bool Kernel::Impl::handleSvc(Thread *t) {
         const uint32_t addr = r[1], type = r[2];
         const int32_t value = int32_t(r[3]);
         if (type == 0) { // SIGNAL: wake `value` waiters (all when negative)
+            {
+                char ab[96];
+                std::snprintf(ab, sizeof ab, "arbitrate-signal %08x count %d %s", addr, value,
+                              I.tname(t).c_str());
+                I.trace(ab);
+            }
             std::vector<Thread *> w;
             for (auto &th : I.threads)
                 if (th->state == TState::Waiting && th->waitKind == WaitKind::Arbiter &&
@@ -896,6 +977,12 @@ bool Kernel::Impl::handleSvc(Thread *t) {
         if (type > 4)
             return fail(kresult::InvalidCombination);
         const int32_t cur = int32_t(I.rd32(addr));
+        {
+            char ab[96];
+            std::snprintf(ab, sizeof ab, "arbitrate %08x type %u value %d current %d %s", addr, type, value,
+                          cur, I.tname(t).c_str());
+            I.trace(ab);
+        }
         if (!(cur < value)) {
             r[0] = kresult::Success;
             return true;

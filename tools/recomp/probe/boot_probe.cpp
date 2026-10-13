@@ -16,6 +16,7 @@
 #include "pokerecomp/dispatcher.h"
 #include "pokerecomp/guest_memory.h"
 #include "pokerecomp/kernel.h"
+#include "pokerecomp/services.h"
 
 extern "C" {
 typedef struct {
@@ -70,6 +71,7 @@ int main(int argc, char **argv) {
                                           : UnimplementedPolicy::ReturnError);
     kernel.setLog([](const std::string &s) { std::printf("[kernel] %s\n", s.c_str()); });
     kernel.configure(KernelConfig{});
+    registerDefaultServices(kernel);
     kernel.createMainThread(kText, kStackTop, 0);
     std::printf("registered %zu blocks; policy for unimplemented IPC: %s\n", disp.blockCount(),
                 lenient ? "success" : "error");
@@ -83,10 +85,18 @@ int main(int argc, char **argv) {
     if (rr == RunResult::Break)
         std::printf("  svcBreak reason %u\n", kernel.breakReason());
 
+    for (const auto &d : kernel.describeThreads())
+        std::printf("  %s\n", d.c_str());
     for (uint32_t id = 1; id <= 4; id++)
         if (const RcCtx *c = kernel.threadContext(id))
             std::printf("thread %u: pc=%08x lr=%08x sp=%08x r0=%08x r1=%08x r2=%08x r3=%08x\n", id, c->r[15],
                         c->r[14], c->r[13], c->r[0], c->r[1], c->r[2], c->r[3]);
+    {
+        const auto &tr = kernel.trace();
+        std::printf("last trace lines:\n");
+        for (size_t k = tr.size() > 14 ? tr.size() - 14 : 0; k < tr.size(); k++)
+            std::printf("  | %s\n", tr[k].c_str());
+    }
     // trace summary: SVC histogram and the sequence of IPC requests
     std::map<std::string, unsigned> svcHist;
     std::vector<std::string> ipc;
@@ -95,6 +105,12 @@ int main(int argc, char **argv) {
             svcHist[t.substr(4, 4)]++;
         else if (t.rfind("ipc ", 0) == 0 || t.rfind("srv ", 0) == 0)
             ipc.push_back(t);
+    }
+    {
+        unsigned shown = 0;
+        for (const auto &t : kernel.trace())
+            if ((t.rfind("create", 0) == 0 || t.rfind("arbitrate", 0) == 0) && shown++ < 20)
+                std::printf("  arb: %s\n", t.c_str());
     }
     std::printf("svcs=%" PRIu64 " ipc=%" PRIu64 " thread switches=%" PRIu64 " virtual ticks=%" PRIu64 "\n",
                 kernel.stats().svcs, kernel.stats().ipcRequests, kernel.stats().switches, kernel.ticks());

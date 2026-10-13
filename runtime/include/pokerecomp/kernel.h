@@ -110,8 +110,19 @@ class Kernel {
     // For services and tests
     GuestMemory &memory() { return gm_; }
     Handle createEvent(bool sticky);
+    Handle createMutex(bool locked);
+    Handle createSemaphore(int32_t initial, int32_t max);
+    // Ends the run with RunResult::Break and records why (used for fatal errors reported by the guest).
+    void stopWithReason(uint32_t reason, const std::string &message);
+    const std::string &stopMessage() const { return stopMessage_; }
+    // Host view of guest memory for services.
+    uint8_t *guestPtr(uint32_t addr) { return gm_.base() + addr; }
     void signalEvent(Handle h);
+    // Signals `h` after `delayNs` of virtual time (models system services that notify asynchronously).
+    void scheduleSignal(Handle h, uint64_t delayNs);
     uint32_t currentThreadId() const;
+    // One line per live thread describing its state and what it waits for (deadlock diagnostics).
+    std::vector<std::string> describeThreads() const;
     // Debug access to a thread's registers (nullptr for unknown ids).
     const RcCtx *threadContext(uint32_t id) const;
 
@@ -127,6 +138,7 @@ class Kernel {
     uint64_t now_ = 0;
     KernelStats stats_;
     uint32_t exitCode_ = 0, breakReason_ = 0;
+    std::string stopMessage_;
     GuestFault fault_;
 };
 
