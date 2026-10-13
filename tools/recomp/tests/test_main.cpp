@@ -47,6 +47,8 @@ void load(RcCtx &c, const vec::Vector &v) {
     c.c = (v.flags >> 1) & 1;
     c.v = v.flags & 1;
     c.tls = v.tls;
+    c.q = (v.qge >> 4) & 1;
+    c.ge = v.qge & 0xF;
 }
 
 struct Result {
@@ -74,6 +76,10 @@ Result check(const RcCtx &c, const vec::Vector &v, bool flags) {
             return {b};
         }
     }
+    if (((c.q << 4) | c.ge) != v.finalQge) {
+        std::snprintf(b, sizeof b, "q/ge got %x want %x", (c.q << 4) | c.ge, v.finalQge);
+        return {b};
+    }
     if (c.trap)
         return {"trap"};
     if (rc_test_faults)
@@ -91,7 +97,9 @@ Result check(const RcCtx &c, const vec::Vector &v, bool flags) {
 } // namespace
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
+    const bool interpOnly =
+        argc == 3 && std::string(argv[2]) == "--interp-only"; // debugging aid for ad-hoc vector files
+    if (argc != 2 && !interpOnly) {
         std::fprintf(stderr, "usage: recomp_tests vectors\n");
         return 2;
     }
@@ -100,7 +108,7 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "no vectors\n");
         return 1;
     }
-    if (vs.size() != rc_vec_count) {
+    if (!interpOnly && vs.size() != rc_vec_count) {
         std::fprintf(stderr, "generated block count mismatch\n");
         return 1;
     }
@@ -129,7 +137,7 @@ int main(int argc, char **argv) {
                 failInterp++;
             }
         }
-        for (int variant = 0; variant < 2; variant++) {
+        for (int variant = 0; variant < (interpOnly ? 0 : 2); variant++) {
             RcCtx c;
             load(c, v);
             resetWindow();

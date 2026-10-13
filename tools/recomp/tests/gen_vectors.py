@@ -25,6 +25,8 @@ def memf(a):
 
 
 rnd = random.Random()
+FORCE_KIND = None
+ONLY_MEDIA = False
 
 
 def cond(force_al=False):
@@ -231,7 +233,65 @@ def branch():
     return (c << 28) | (0x012FFF10 if k == "bx" else 0x012FFF30) | rm, [{"align": rm}]
 
 
-GENS = [(dp, 40), (mul, 8), (ldst, 12), (ldsth, 8), (ldmstm, 6), (swp, 2), (excl_pair, 3), (misc, 8)]
+def media():
+    c = cond()
+    k = FORCE_KIND or rnd.choice(["par"] * 6 + ["sel", "pkh", "ssat", "usat", "ssat16", "usat16", "ext16", "usad", "smlad", "smlald", "smmul",
+                                 "qop", "smxy", "smw", "smlalxy"])
+    rd = rnd.choice(DATA)
+    rn, rm, rs = rnd.randrange(15), rnd.randrange(15), rnd.randrange(15)
+    if k == "par":
+        pfx = rnd.choice([1, 2, 3, 5, 6, 7])
+        op2 = rnd.choice([0, 1, 2, 3, 4, 7])
+        return (c << 28) | ((0x60 | pfx) << 20) | (rn << 16) | (rd << 12) | 0xF00 | (op2 << 5) | 0x10 | rm, []
+    if k == "sel":
+        return (c << 28) | 0x06800FB0 | (rn << 16) | (rd << 12) | rm, []
+    if k == "pkh":
+        return (c << 28) | (0x06800050 if rnd.randrange(2) else 0x06800010) | (rn << 16) | (rd << 12) | (rnd.randrange(32) << 7) | rm, []
+    if k in ("ssat", "usat"):
+        base = 0x06A00010 if k == "ssat" else 0x06E00010
+        return (c << 28) | base | (rnd.randrange(32) << 16) | (rd << 12) | (rnd.randrange(32) << 7) | (rnd.randrange(2) << 6) | rm, []
+    if k in ("ssat16", "usat16"):
+        base = 0x06A00F30 if k == "ssat16" else 0x06E00F30
+        return (c << 28) | base | (rnd.randrange(16) << 16) | (rd << 12) | rm, []
+    if k == "ext16":
+        base = rnd.choice([0x068F0070, 0x06CF0070, 0x06800070, 0x06C00070])
+        if (base & 0xF0000) != 0xF0000 or True:
+            rn_ = 15 if (base & 0xF0000) == 0xF0000 else rnd.randrange(15)
+        return (c << 28) | (base & 0xFFF0FFFF) | (rn_ << 16) | (rd << 12) | (rnd.randrange(4) << 10) | rm, []
+    if k == "usad":
+        if rnd.randrange(2):
+            return (c << 28) | 0x0780F010 | (rd << 16) | (rs << 8) | rm, []
+        return (c << 28) | 0x07800010 | (rd << 16) | (rnd.randrange(15) << 12) | (rs << 8) | rm, []
+    if k == "smlad":
+        base = rnd.choice([0x07000010, 0x07000050])
+        ra = 15 if rnd.randrange(2) else rnd.randrange(15)
+        return (c << 28) | base | (rnd.randrange(2) << 5) | (rd << 16) | (ra << 12) | (rs << 8) | rm, []
+    if k == "smlald":
+        lo, hi = rnd.sample(DATA, 2)
+        base = rnd.choice([0x07400010, 0x07400050])
+        return (c << 28) | base | (rnd.randrange(2) << 5) | (hi << 16) | (lo << 12) | (rs << 8) | rm, []
+    if k == "smmul":
+        which = rnd.choice(["mla", "mul", "mls"])
+        ra = 15 if which == "mul" else rnd.randrange(15)
+        base = 0x075000D0 if which == "mls" else 0x07500010
+        return (c << 28) | base | (rnd.randrange(2) << 5) | (rd << 16) | (ra << 12) | (rs << 8) | rm, []
+    if k == "qop":
+        return (c << 28) | 0x01000050 | (rnd.randrange(4) << 21) | (rn << 16) | (rd << 12) | rm, []
+    if k == "smxy":
+        x, y = rnd.randrange(2), rnd.randrange(2)
+        if rnd.randrange(2):
+            return (c << 28) | 0x01000080 | (y << 6) | (x << 5) | (rd << 16) | (rnd.randrange(15) << 12) | (rs << 8) | rm, []
+        return (c << 28) | 0x01600080 | (y << 6) | (x << 5) | (rd << 16) | (rs << 8) | rm, []
+    if k == "smw":
+        y = rnd.randrange(2)
+        if rnd.randrange(2):
+            return (c << 28) | 0x01200080 | (y << 6) | (rd << 16) | (rnd.randrange(15) << 12) | (rs << 8) | rm, []
+        return (c << 28) | 0x012000A0 | (y << 6) | (rd << 16) | (rs << 8) | rm, []
+    lo, hi = rnd.sample(DATA, 2)
+    return (c << 28) | 0x01400080 | (rnd.randrange(2) << 6) | (rnd.randrange(2) << 5) | (hi << 16) | (lo << 12) | (rs << 8) | rm, []
+
+
+GENS = [(dp, 40), (mul, 8), (ldst, 12), (ldsth, 8), (ldmstm, 6), (swp, 2), (excl_pair, 3), (misc, 8), (media, 22)]
 
 
 def one_insn():
@@ -245,6 +305,9 @@ def one_insn():
 
 
 def make_vector():
+    if ONLY_MEDIA:
+        w, sl = media()
+        return [w], {k: v for d in sl for k, v in d.items()}
     n = rnd.randrange(1, 6)
     seq = []
     setups = {}
@@ -283,11 +346,12 @@ def run(seq, setups):
         tgt = rnd.choice([0x00400000, 0x00400001, 0x00800004, 0x00800005])
         init[t] = tgt
     flags = rnd.getrandbits(4)
+    q_in, ge_in = rnd.randrange(2), rnd.getrandbits(4)
     tls = rnd.getrandbits(32) & ~3
     for i, r in enumerate(REGS):
         uc.reg_write(r, init[i])
     cpsr = uc.reg_read(UC_ARM_REG_CPSR)
-    cpsr = (cpsr & 0x0FFFFFFF) | (flags << 28)
+    cpsr = (cpsr & 0x0FF0FFFF & ~(1 << 27)) | (flags << 28) | (q_in << 27) | (ge_in << 16)
     uc.reg_write(UC_ARM_REG_CPSR, cpsr)
     try:
         uc.reg_write(UC_ARM_REG_C13_C0_3, tls)
@@ -304,24 +368,29 @@ def run(seq, setups):
     cpsr = uc.reg_read(UC_ARM_REG_CPSR)
     after = bytes(uc.mem_read(WIN, WIN_SIZE))
     diffs = [(WIN + i, b) for i, b in enumerate(after) if b != memf(WIN + i)]
-    return init, flags, tls, out, pc, (cpsr >> 28) & 0xF, (cpsr >> 5) & 1, diffs
+    qge_out = (((cpsr >> 27) & 1) << 4) | ((cpsr >> 16) & 0xF)
+    return init, flags, tls, (q_in << 4) | ge_in, out, pc, (cpsr >> 28) & 0xF, (cpsr >> 5) & 1, qge_out, diffs
 
 
 def main():
+    global FORCE_KIND, ONLY_MEDIA
     count, seed, path = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+    if len(sys.argv) > 4:
+        ONLY_MEDIA = True
+        FORCE_KIND = sys.argv[4] if sys.argv[4] != "any" else None
     rnd.seed(seed)
     done = 0
     with open(path, "w") as f:
-        f.write("# vectors: N words | init r0-r14 | nzcv tls | final r0-r14 pc nzcv thumb | ndiffs (addr:byte)*\n")
+        f.write("# vectors: N words | init r0-r14 nzcv tls qge | final r0-r14 pc nzcv thumb qge | ndiffs (addr:byte)*\n")
         while done < count:
             seq, setups = make_vector()
             res = run(seq, setups)
             if res is None:
                 continue
-            init, flags, tls, out, pc, nzcv, thumb, diffs = res
+            init, flags, tls, qge_in, out, pc, nzcv, thumb, qge_out, diffs = res
             h = lambda xs: " ".join("%08x" % x for x in xs)
-            f.write("V %d %s | %s %x %08x | %s %08x %x %d | %d %s\n" % (
-                len(seq), h(seq), h(init), flags, tls, h(out), pc, nzcv, thumb, len(diffs),
+            f.write("V %d %s | %s %x %08x %x | %s %08x %x %d %x | %d %s\n" % (
+                len(seq), h(seq), h(init), flags, tls, qge_in, h(out), pc, nzcv, thumb, qge_out, len(diffs),
                 " ".join("%08x:%02x" % d for d in diffs)))
             done += 1
 

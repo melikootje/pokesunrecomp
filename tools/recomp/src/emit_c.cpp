@@ -578,6 +578,123 @@ struct Emitter {
         case Op::Uxtah:
             extend(i);
             break;
+        case Op::Par:
+            line(fmt("{ uint32_t ge = c->ge; r%u = rc_par(%u, %u, r%u, r%u, &ge); c->ge = ge; }", i.rd, i.sub,
+                     i.sub2, i.rn, i.rm));
+            break;
+        case Op::Sel:
+            line(fmt("r%u = rc_sel(r%u, r%u, c->ge);", i.rd, i.rn, i.rm));
+            break;
+        case Op::Pkh:
+            if (!i.fx)
+                line(fmt("r%u = (r%u & 0xFFFFu) | ((r%u << %u) & 0xFFFF0000u);", i.rd, i.rn, i.rm,
+                         i.shiftAmt));
+            else
+                line(fmt("r%u = (r%u & 0xFFFF0000u) | ((uint32_t)((int32_t)r%u >> %u) & 0xFFFFu);", i.rd,
+                         i.rn, i.rm, i.shiftAmt == 32 ? 31 : i.shiftAmt));
+            break;
+        case Op::Ssat:
+        case Op::Usat: {
+            std::string v;
+            if (i.shift == Shift::Asr)
+                v = fmt("(int64_t)((int32_t)r%u >> %u)", i.rm, i.shiftAmt == 32 ? 31 : i.shiftAmt);
+            else
+                v = fmt("(int64_t)(int32_t)(r%u << %u)", i.rm, i.shiftAmt);
+            line(fmt("r%u = %s(", i.rd, i.op == Op::Ssat ? "rc_ssat" : "rc_usat") + v +
+                 fmt(", %u, &c->q);", i.imm));
+            break;
+        }
+        case Op::Ssat16:
+        case Op::Usat16: {
+            const char *f = i.op == Op::Ssat16 ? "rc_ssat" : "rc_usat";
+            line(fmt("r%u = (%s(rc_sx(r%u & 0xFFFFu, 16), %u, &c->q) & 0xFFFFu) | ((%s(rc_sx(r%u >> 16, 16), "
+                     "%u, &c->q) & "
+                     "0xFFFFu) << 16);",
+                     i.rd, f, i.rm, i.imm, f, i.rm, i.imm));
+            break;
+        }
+        case Op::Sxtb16:
+        case Op::Uxtb16:
+        case Op::Sxtab16:
+        case Op::Uxtab16: {
+            const bool sg = i.op == Op::Sxtb16 || i.op == Op::Sxtab16,
+                       add = i.op == Op::Sxtab16 || i.op == Op::Uxtab16;
+            const std::string src = i.rot ? fmt("rc_ror(r%u, %u)", i.rm, i.rot) : fmt("r%u", i.rm);
+            line(fmt("r%u = rc_ext16(", i.rd) + src + fmt(", %d, %d, ", sg ? 1 : 0, add ? 1 : 0) +
+                 (add ? fmt("r%u", i.rn) : std::string("0u")) + ");");
+            break;
+        }
+        case Op::Usad8:
+        case Op::Usada8:
+            line(fmt("r%u = rc_usad(r%u, r%u, ", i.rd, i.rm, i.rs) +
+                 (i.op == Op::Usada8 ? fmt("r%u", i.rn) : std::string("0u")) + ");");
+            break;
+        case Op::Smlad:
+        case Op::Smlsd: {
+            const std::string m = i.fx ? fmt("rc_ror(r%u, 16)", i.rs) : fmt("r%u", i.rs);
+            line(fmt("{ const uint32_t n = r%u, m = ", i.rm) + m + ";");
+            line("  int64_t p1 = rc_sx(n & 0xFFFFu, 16) * rc_sx(m & 0xFFFFu, 16), p2 = rc_sx(n >> 16, 16) * "
+                 "rc_sx(m >> 16, 16);");
+            line(std::string("  int64_t r = ") + (i.op == Op::Smlad ? "p1 + p2;" : "p1 - p2;"));
+            if (i.acc)
+                line(fmt("  r += (int32_t)r%u;", i.rn));
+            line(fmt("  if (r != (int32_t)r) c->q = 1; r%u = (uint32_t)r; }", i.rd));
+            break;
+        }
+        case Op::Smlald:
+        case Op::Smlsld: {
+            const std::string m = i.fx ? fmt("rc_ror(r%u, 16)", i.rs) : fmt("r%u", i.rs);
+            line(fmt("{ const uint32_t n = r%u, m = ", i.rm) + m + ";");
+            line("  int64_t p1 = rc_sx(n & 0xFFFFu, 16) * rc_sx(m & 0xFFFFu, 16), p2 = rc_sx(n >> 16, 16) * "
+                 "rc_sx(m >> 16, 16);");
+            line(fmt("  int64_t r = (int64_t)(((uint64_t)r%u << 32) | r%u) + ", i.rn, i.rd) +
+                 (i.op == Op::Smlald ? "(p1 + p2);" : "(p1 - p2);"));
+            line(fmt("  r%u = (uint32_t)r; r%u = (uint32_t)((uint64_t)r >> 32); }", i.rd, i.rn));
+            break;
+        }
+        case Op::Smmla:
+        case Op::Smmls: {
+            line(fmt("{ const int64_t prod = (int64_t)(int32_t)r%u * (int64_t)(int32_t)r%u;", i.rm, i.rs));
+            line(std::string("  __int128 acc = ") +
+                 (i.acc ? fmt("(__int128)(int32_t)r%u << 32;", i.rn) : std::string("0;")));
+            line(std::string("  acc = acc ") + (i.op == Op::Smmls ? "- prod;" : "+ prod;"));
+            if (i.fx)
+                line("  acc += 0x80000000ll;");
+            line(fmt("  r%u = (uint32_t)(uint64_t)(acc >> 32); }", i.rd));
+            break;
+        }
+        case Op::Qadd:
+        case Op::Qsub:
+        case Op::Qdadd:
+        case Op::Qdsub:
+            line(fmt("r%u = rc_qop(%d, %d, r%u, r%u, &c->q);", i.rd,
+                     (i.op == Op::Qsub || i.op == Op::Qdsub) ? 1 : 0,
+                     (i.op == Op::Qdadd || i.op == Op::Qdsub) ? 1 : 0, i.rm, i.rn));
+            break;
+        case Op::Smla:
+        case Op::Smlaw:
+        case Op::Smlal16: {
+            const std::string b = fmt("rc_sx(r%u %s, 16)", i.rs, i.fy ? ">> 16" : "& 0xFFFFu");
+            if (i.op == Op::Smlaw) {
+                line("{ int64_t r = (((int64_t)(int32_t)" + fmt("r%u", i.rm) + ") * " + b + ") >> 16;");
+                if (i.acc)
+                    line(fmt("  r += (int32_t)r%u; if (r != (int32_t)r) c->q = 1;", i.rn));
+                line(fmt("  r%u = (uint32_t)r; }", i.rd));
+                break;
+            }
+            const std::string a = fmt("rc_sx(r%u %s, 16)", i.rm, i.fx ? ">> 16" : "& 0xFFFFu");
+            if (i.op == Op::Smlal16) {
+                line("{ int64_t r = (int64_t)(((uint64_t)" + fmt("r%u", i.rn) + " << 32) | " +
+                     fmt("r%u", i.rd) + ") + " + a + " * " + b + ";");
+                line(fmt("  r%u = (uint32_t)r; r%u = (uint32_t)((uint64_t)r >> 32); }", i.rd, i.rn));
+                break;
+            }
+            line("{ int64_t r = " + a + " * " + b + ";");
+            if (i.acc)
+                line(fmt("  r += (int32_t)r%u; if (r != (int32_t)r) c->q = 1;", i.rn));
+            line(fmt("  r%u = (uint32_t)r; }", i.rd));
+            break;
+        }
         case Op::Svc:
             line(fmt("c->svc = %uu;", i.imm));
             break;

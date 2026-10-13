@@ -120,8 +120,9 @@ bool Insn::endsBlock() const {
     }
     if (op >= Op::And && op <= Op::Mvn && !isCompare(op))
         return rd == 15;
-    if (op == Op::Mul || op == Op::Mla || op == Op::Clz || op == Op::Rev || op == Op::Rev16 ||
-        op == Op::Revsh || (op >= Op::Sxtb && op <= Op::Uxtah) || op == Op::MrcTls || op == Op::Mrs)
+    if ((op >= Op::Par && op <= Op::Smlal16) || op == Op::Mul || op == Op::Mla || op == Op::Clz ||
+        op == Op::Rev || op == Op::Rev16 || op == Op::Revsh || (op >= Op::Sxtb && op <= Op::Uxtah) ||
+        op == Op::MrcTls || op == Op::Mrs)
         return rd == 15;
     return false;
 }
@@ -211,7 +212,40 @@ Insn decodeArm(uint32_t w, uint32_t pc) {
         if ((w & 0x0FFFFFF8) == 0x0320F000) {
             i.op = Op::Nop;
             break;
-        }                                     // NOP, YIELD, WFE, WFI, SEV hints
+        } // NOP, YIELD, WFE, WFI, SEV hints
+        if ((w & 0x0F900FF0) == 0x01000050) { // QADD / QSUB / QDADD / QDSUB (Rd, Rm, Rn)
+            i.op = Op(uint8_t(Op::Qadd) + ((w >> 21) & 3));
+            break;
+        }
+        if ((w & 0x0F900090) == 0x01000080) { // SMLAxy / SMLAWy / SMULWy / SMLALxy / SMULxy
+            const uint32_t k = (w >> 21) & 3;
+            i.fx = (w & 0x20) != 0;
+            i.fy = (w & 0x40) != 0;
+            switch (k) {
+            case 0:
+                i.op = Op::Smla;
+                i.acc = true;
+                break;
+            case 1:
+                i.op = Op::Smlaw;
+                i.acc = !(w & 0x20);
+                i.fx = false;
+                break;
+            case 2:
+                i.op = Op::Smlal16;
+                i.acc = true;
+                break;
+            default:
+                i.op = Op::Smla;
+                i.acc = false;
+                break;
+            }
+            if (k != 2) {
+                i.rd = i.rn;
+                i.rn = (w >> 12) & 0xF;
+            } // rd = Rd(19:16), rn = Ra
+            break;
+        }
         if (cls == 0 && (w & 0x90) == 0x90) { // extension space
             const uint32_t sh = (w >> 5) & 3;
             if (sh == 0) {
@@ -357,6 +391,85 @@ Insn decodeArm(uint32_t w, uint32_t pc) {
     case 2:
     case 3: {
         if (cls == 3 && (w & 0x10)) { // media instructions
+            const uint32_t top = (w >> 20) & 0xFF;
+            const uint32_t op2 = (w >> 5) & 7;
+            if ((top & 0xF8) == 0x60 && (top & 7) != 0 && (top & 7) != 4 && ((w >> 8) & 0xF) == 0xF) {
+                static const uint8_t kind[8] = {9, 0, 1, 2, 9, 3, 4, 5};
+                static const uint8_t pop[8] = {0, 1, 2, 3, 4, 9, 9, 5};
+                if (kind[top & 7] == 9 || pop[op2] == 9) {
+                    i.op = Op::Undef;
+                    break;
+                }
+                i.op = Op::Par;
+                i.sub = kind[top & 7];
+                i.sub2 = pop[op2];
+                break;
+            }
+            if ((w & 0x0FF00FF0) == 0x06800FB0) {
+                i.op = Op::Sel;
+                break;
+            }
+            if ((w & 0x0FF00030) == 0x06800010 && (w & 0x40) == 0) {
+                i.op = Op::Pkh;
+                i.fx = false;
+                i.shiftAmt = (w >> 7) & 31;
+                break;
+            }
+            if ((w & 0x0FF00070) == 0x06800050) { // PKHTB: ASR, #0 encodes 32
+                i.op = Op::Pkh;
+                i.fx = true;
+                i.shiftAmt = (w >> 7) & 31;
+                if (!i.shiftAmt)
+                    i.shiftAmt = 32;
+                break;
+            }
+            if ((w & 0x0FA00030) == 0x06A00010) { // SSAT / USAT
+                i.op = (w & (1u << 22)) ? Op::Usat : Op::Ssat;
+                i.imm = (w >> 16) & 31; // sat_imm (SSAT adds 1 below)
+                i.shiftAmt = (w >> 7) & 31;
+                i.shift = (w & 0x40) ? Shift::Asr : Shift::Lsl;
+                if (i.shift == Shift::Asr && !i.shiftAmt)
+                    i.shiftAmt = 32;
+                if (i.op == Op::Ssat)
+                    i.imm += 1;
+                break;
+            }
+            if ((w & 0x0FB00FF0) == 0x06A00F30) {
+                i.op = (w & (1u << 22)) ? Op::Usat16 : Op::Ssat16;
+                i.imm = (w >> 16) & 15;
+                if (i.op == Op::Ssat16)
+                    i.imm += 1;
+                break;
+            }
+            if ((w & 0x0FF000F0) == 0x07800010) {
+                i.op = ((w >> 12) & 0xF) == 15 ? Op::Usad8 : Op::Usada8;
+                i.rd = i.rn;
+                i.rn = (w >> 12) & 0xF; // rd = Rd(19:16), rn = Ra, rs = Rm(11:8), rm = Rn(3:0)
+                break;
+            }
+            if ((w & 0x0FF000D0) == 0x07000010 ||
+                (w & 0x0FF000D0) == 0x07000050) { // SMLAD / SMUAD / SMLSD / SMUSD
+                const bool sub_ = (w & 0x40) != 0;
+                i.fx = (w & 0x20) != 0;
+                i.acc = ((w >> 12) & 0xF) != 15;
+                i.op = sub_ ? Op::Smlsd : Op::Smlad;
+                i.rd = i.rn;
+                i.rn = (w >> 12) & 0xF;
+                break;
+            }
+            if ((w & 0x0FF000D0) == 0x07400010 || (w & 0x0FF000D0) == 0x07400050) { // SMLALD / SMLSLD
+                i.op = (w & 0x40) ? Op::Smlsld : Op::Smlald;
+                i.fx = (w & 0x20) != 0;
+                break; // rd = RdLo (15:12), rn = RdHi (19:16)
+            }
+            if ((w & 0x0FF000D0) == 0x07500010 || (w & 0x0FF000D0) == 0x075000D0) { // SMMLA/SMMUL, SMMLS
+                i.op = (w & 0x80) ? Op::Smmls : Op::Smmla;
+                i.fx = (w & 0x20) != 0; // rounding
+                i.acc = ((w >> 12) & 0xF) != 15 || i.op == Op::Smmls;
+                i.rd = i.rn;
+                i.rn = (w >> 12) & 0xF;
+                break;
+            }
             if ((w & 0x0FFF0FF0) == 0x06BF0F30) {
                 i.op = Op::Rev;
                 break;
@@ -370,15 +483,22 @@ Insn decodeArm(uint32_t w, uint32_t pc) {
                 break;
             }
             if ((w & 0x0F8003F0) == 0x06800070) {
-                const uint32_t kind = (w >> 20) & 7; // 010 sxtb, 011 sxth, 110 uxtb, 111 uxth
+                const uint32_t kind =
+                    (w >> 20) & 7; // 000 sxtb16, 010 sxtb, 011 sxth, 100 uxtb16, 110 uxtb, 111 uxth
                 const bool add = ((w >> 16) & 0xF) != 15;
                 i.rot = uint8_t(((w >> 10) & 3) * 8);
                 switch (kind) {
+                case 0:
+                    i.op = add ? Op::Sxtab16 : Op::Sxtb16;
+                    break;
                 case 2:
                     i.op = add ? Op::Sxtab : Op::Sxtb;
                     break;
                 case 3:
                     i.op = add ? Op::Sxtah : Op::Sxth;
+                    break;
+                case 4:
+                    i.op = add ? Op::Uxtab16 : Op::Uxtb16;
                     break;
                 case 6:
                     i.op = add ? Op::Uxtab : Op::Uxtb;
@@ -471,14 +591,16 @@ Insn decodeArm(uint32_t w, uint32_t pc) {
 
 const char *opName(Op op) {
     static const char *names[] = {
-        "undef",  "and",   "eor",   "sub",   "rsb",     "add",     "adc",    "sbc",    "rsc",
-        "tst",    "teq",   "cmp",   "cmn",   "orr",     "mov",     "bic",    "mvn",    "mul",
-        "mla",    "umull", "umlal", "smull", "smlal",   "umaal",   "ldr",    "str",    "ldrb",
-        "strb",   "ldrh",  "strh",  "ldrsb", "ldrsh",   "ldrd",    "strd",   "ldm",    "stm",
-        "swp",    "swpb",  "ldrex", "strex", "ldrexb",  "strexb",  "ldrexh", "strexh", "ldrexd",
-        "strexd", "clrex", "b",     "bl",    "bx",      "blx",     "blx",    "clz",    "rev",
-        "rev16",  "revsh", "sxtb",  "sxth",  "uxtb",    "uxth",    "sxtab",  "sxtah",  "uxtab",
-        "uxtah",  "svc",   "nop",   "pld",   "barrier", "mrc-tls", "mrs",    "msr",    "bkpt"};
+        "undef",  "and",     "eor",     "sub",    "rsb",    "add",    "adc",   "sbc",     "rsc",     "tst",
+        "teq",    "cmp",     "cmn",     "orr",    "mov",    "bic",    "mvn",   "mul",     "mla",     "umull",
+        "umlal",  "smull",   "smlal",   "umaal",  "ldr",    "str",    "ldrb",  "strb",    "ldrh",    "strh",
+        "ldrsb",  "ldrsh",   "ldrd",    "strd",   "ldm",    "stm",    "swp",   "swpb",    "ldrex",   "strex",
+        "ldrexb", "strexb",  "ldrexh",  "strexh", "ldrexd", "strexd", "clrex", "b",       "bl",      "bx",
+        "blx",    "blx",     "clz",     "rev",    "rev16",  "revsh",  "sxtb",  "sxth",    "uxtb",    "uxth",
+        "sxtab",  "sxtah",   "uxtab",   "uxtah",  "svc",    "nop",    "pld",   "barrier", "mrc-tls", "mrs",
+        "msr",    "bkpt",    "par",     "sel",    "pkh",    "ssat",   "usat",  "ssat16",  "usat16",  "sxtb16",
+        "uxtb16", "sxtab16", "uxtab16", "usad8",  "usada8", "smlad",  "smlsd", "smlald",  "smlsld",  "smmla",
+        "smmls",  "qadd",    "qsub",    "qdadd",  "qdsub",  "smla",   "smlaw", "smlal16"};
     return names[uint8_t(op)];
 }
 
@@ -486,8 +608,8 @@ std::string disasm(const Insn &i) {
     static const char *cc[] = {"eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc",
                                "hi", "ls", "ge", "lt", "gt", "le", "",   "nv"};
     char b[160];
-    std::snprintf(b, sizeof b, "%08x: %s%s%s rd=r%u rn=r%u rm=r%u rs=r%u imm=%#x", i.pc, opName(i.op),
-                  cc[i.cond], i.setFlags ? "s" : "", i.rd, i.rn, i.rm, i.rs, i.imm);
+    std::snprintf(b, sizeof b, "%08x: [%08x] %s%s%s rd=r%u rn=r%u rm=r%u rs=r%u imm=%#x", i.pc, i.word,
+                  opName(i.op), cc[i.cond], i.setFlags ? "s" : "", i.rd, i.rn, i.rm, i.rs, i.imm);
     return b;
 }
 

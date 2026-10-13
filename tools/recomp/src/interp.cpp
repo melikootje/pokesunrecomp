@@ -100,6 +100,92 @@ Shifted shiftReg(Shift t, uint32_t v, uint32_t rsVal, uint32_t cIn) {
     }
 }
 
+// ---- ARMv6 media / DSP helpers (written lane-wise; independent of the generated-code helpers) ----
+int64_t sext(uint32_t v, unsigned bits) { return int64_t(int32_t(v << (32 - bits))) >> (32 - bits); }
+
+uint32_t satSigned(int64_t v, unsigned n, uint32_t &q) {
+    const int64_t hi = (int64_t(1) << (n - 1)) - 1, lo = -(int64_t(1) << (n - 1));
+    if (v > hi) {
+        q = 1;
+        return uint32_t(hi);
+    }
+    if (v < lo) {
+        q = 1;
+        return uint32_t(lo);
+    }
+    return uint32_t(v);
+}
+
+uint32_t satUnsigned(int64_t v, unsigned n, uint32_t &q) {
+    const int64_t hi = (int64_t(1) << n) - 1;
+    if (v > hi) {
+        q = 1;
+        return uint32_t(hi);
+    }
+    if (v < 0) {
+        q = 1;
+        return 0;
+    }
+    return uint32_t(v);
+}
+
+uint32_t parallel(unsigned kind, unsigned pop, uint32_t a, uint32_t b, uint32_t &ge) {
+    const bool isSigned = kind <= 2;
+    const unsigned bits = pop >= 4 ? 8 : 16;
+    const unsigned lanes = 32 / bits;
+    const uint32_t mask = (1u << bits) - 1;
+    uint32_t out = 0, geOut = 0;
+    for (unsigned l = 0; l < lanes; l++) {
+        unsigned bl = l; // lane of b
+        bool add;
+        switch (pop) {
+        case 0:
+        case 4:
+            add = true;
+            break;
+        case 3:
+        case 5:
+            add = false;
+            break;
+        case 1: // ASX: lo = a.lo - b.hi, hi = a.hi + b.lo
+            add = l == 1;
+            bl = 1 - l;
+            break;
+        default: // SAX: lo = a.lo + b.hi, hi = a.hi - b.lo
+            add = l == 0;
+            bl = 1 - l;
+            break;
+        }
+        const uint32_t ax = (a >> (l * bits)) & mask, bx = (b >> (bl * bits)) & mask;
+        const int64_t x = isSigned ? sext(ax, bits) : int64_t(ax);
+        const int64_t y = isSigned ? sext(bx, bits) : int64_t(bx);
+        const int64_t r = add ? x + y : x - y;
+        uint32_t lane;
+        uint32_t dummy = 0;
+        switch (kind) {
+        case 0:
+        case 3:
+            lane = uint32_t(r) & mask;
+            if (isSigned ? r >= 0 : (add ? r >= (int64_t(1) << bits) : r >= 0))
+                geOut |= (bits == 16 ? 3u : 1u) << (l * (bits == 16 ? 2 : 1));
+            break;
+        case 1:
+            lane = satSigned(r, bits, dummy) & mask;
+            break;
+        case 4:
+            lane = satUnsigned(r, bits, dummy) & mask;
+            break;
+        default:
+            lane = uint32_t(r >> 1) & mask;
+            break;
+        }
+        out |= lane << (l * bits);
+    }
+    if (kind == 0 || kind == 3)
+        ge = geOut;
+    return out;
+}
+
 void setNZ(RcCtx &c, uint32_t r) {
     c.n = r >> 31;
     c.z = r == 0;
@@ -577,6 +663,143 @@ void step(RcCtx &c, Memory &m, const Insn &i) {
     case Op::Uxtah:
         x.extend();
         break;
+    case Op::Par:
+        c.r[i.rd] = parallel(i.sub, i.sub2, c.r[i.rn], c.r[i.rm], c.ge);
+        break;
+    case Op::Sel: {
+        uint32_t r = 0;
+        for (unsigned l = 0; l < 4; l++)
+            r |= ((c.ge >> l) & 1 ? c.r[i.rn] : c.r[i.rm]) & (0xFFu << (8 * l));
+        c.r[i.rd] = r;
+        break;
+    }
+    case Op::Pkh: {
+        const uint32_t n = c.r[i.rn], m = c.r[i.rm];
+        if (!i.fx)
+            c.r[i.rd] = (n & 0xFFFF) | ((m << i.shiftAmt) & 0xFFFF0000u);
+        else
+            c.r[i.rd] =
+                (n & 0xFFFF0000u) | (uint32_t(int32_t(m) >> (i.shiftAmt == 32 ? 31 : i.shiftAmt)) & 0xFFFF);
+        break;
+    }
+    case Op::Ssat:
+    case Op::Usat: {
+        int64_t v = i.shift == Shift::Asr
+                        ? int64_t(int32_t(c.r[i.rm])) >> (i.shiftAmt == 32 ? 31 : i.shiftAmt)
+                        : int64_t(int32_t(c.r[i.rm] << i.shiftAmt));
+        c.r[i.rd] = i.op == Op::Ssat ? satSigned(v, i.imm, c.q) : satUnsigned(v, i.imm, c.q);
+        break;
+    }
+    case Op::Ssat16:
+    case Op::Usat16: {
+        uint32_t r = 0;
+        for (unsigned h = 0; h < 2; h++) {
+            const int64_t v = sext((c.r[i.rm] >> (16 * h)) & 0xFFFF, 16);
+            const uint32_t s = i.op == Op::Ssat16 ? satSigned(v, i.imm, c.q) : satUnsigned(v, i.imm, c.q);
+            r |= (s & 0xFFFF) << (16 * h);
+        }
+        c.r[i.rd] = r;
+        break;
+    }
+    case Op::Sxtb16:
+    case Op::Uxtb16:
+    case Op::Sxtab16:
+    case Op::Uxtab16: {
+        const uint32_t v = ror(c.r[i.rm], i.rot);
+        const bool sg = i.op == Op::Sxtb16 || i.op == Op::Sxtab16;
+        const bool add = i.op == Op::Sxtab16 || i.op == Op::Uxtab16;
+        uint32_t r = 0;
+        for (unsigned h = 0; h < 2; h++) {
+            const uint32_t b = (v >> (16 * h)) & 0xFF;
+            uint32_t e = sg ? uint32_t(int32_t(int8_t(b))) & 0xFFFF : b;
+            if (add)
+                e = (e + (c.r[i.rn] >> (16 * h))) & 0xFFFF;
+            r |= e << (16 * h);
+        }
+        c.r[i.rd] = r;
+        break;
+    }
+    case Op::Usad8:
+    case Op::Usada8: {
+        uint32_t sum = i.op == Op::Usada8 ? c.r[i.rn] : 0;
+        for (unsigned l = 0; l < 4; l++) {
+            const int a = (c.r[i.rm] >> (8 * l)) & 0xFF, b = (c.r[i.rs] >> (8 * l)) & 0xFF;
+            sum += uint32_t(a > b ? a - b : b - a);
+        }
+        c.r[i.rd] = sum;
+        break;
+    }
+    case Op::Smlad:
+    case Op::Smlsd: {
+        const uint32_t n = c.r[i.rm], m = i.fx ? ror(c.r[i.rs], 16) : c.r[i.rs];
+        const int64_t p1 = sext(n & 0xFFFF, 16) * sext(m & 0xFFFF, 16);
+        const int64_t p2 = sext(n >> 16, 16) * sext(m >> 16, 16);
+        int64_t r = i.op == Op::Smlad ? p1 + p2 : p1 - p2;
+        if (i.acc)
+            r += int32_t(c.r[i.rn]);
+        if (r != int32_t(r))
+            c.q = 1;
+        c.r[i.rd] = uint32_t(r);
+        break;
+    }
+    case Op::Smlald:
+    case Op::Smlsld: {
+        const uint32_t n = c.r[i.rm], m = i.fx ? ror(c.r[i.rs], 16) : c.r[i.rs];
+        const int64_t p1 = sext(n & 0xFFFF, 16) * sext(m & 0xFFFF, 16);
+        const int64_t p2 = sext(n >> 16, 16) * sext(m >> 16, 16);
+        const int64_t r =
+            int64_t((uint64_t(c.r[i.rn]) << 32) | c.r[i.rd]) + (i.op == Op::Smlald ? p1 + p2 : p1 - p2);
+        c.r[i.rd] = uint32_t(r);
+        c.r[i.rn] = uint32_t(uint64_t(r) >> 32);
+        break;
+    }
+    case Op::Smmla:
+    case Op::Smmls: {
+        const int64_t prod = int64_t(int32_t(c.r[i.rm])) * int64_t(int32_t(c.r[i.rs]));
+        __int128 acc = i.acc ? (__int128(int32_t(c.r[i.rn])) << 32) : 0;
+        acc = i.op == Op::Smmls ? acc - prod : acc + prod;
+        if (i.fx)
+            acc += 0x80000000ll;
+        c.r[i.rd] = uint32_t(uint64_t(acc >> 32));
+        break;
+    }
+    case Op::Qadd:
+    case Op::Qsub:
+    case Op::Qdadd:
+    case Op::Qdsub: {
+        const int64_t m = int32_t(c.r[i.rm]);
+        int64_t n = int32_t(c.r[i.rn]);
+        if (i.op == Op::Qdadd || i.op == Op::Qdsub)
+            n = int32_t(satSigned(n * 2, 32, c.q));
+        const bool sub = i.op == Op::Qsub || i.op == Op::Qdsub;
+        c.r[i.rd] = satSigned(sub ? m - n : m + n, 32, c.q);
+        break;
+    }
+    case Op::Smla:
+    case Op::Smlaw:
+    case Op::Smlal16: {
+        const uint32_t n = c.r[i.rm], m = c.r[i.rs];
+        const int64_t b = sext(i.fy ? m >> 16 : m & 0xFFFF, 16);
+        if (i.op == Op::Smlaw) {
+            const int64_t r = ((int64_t(int32_t(n)) * b) >> 16) + (i.acc ? int32_t(c.r[i.rn]) : 0);
+            if (i.acc && r != int32_t(r))
+                c.q = 1;
+            c.r[i.rd] = uint32_t(r);
+            break;
+        }
+        const int64_t p = sext(i.fx ? n >> 16 : n & 0xFFFF, 16) * b;
+        if (i.op == Op::Smlal16) {
+            const int64_t r = int64_t((uint64_t(c.r[i.rn]) << 32) | c.r[i.rd]) + p;
+            c.r[i.rd] = uint32_t(r);
+            c.r[i.rn] = uint32_t(uint64_t(r) >> 32);
+            break;
+        }
+        const int64_t r = p + (i.acc ? int32_t(c.r[i.rn]) : 0);
+        if (i.acc && r != int32_t(r))
+            c.q = 1;
+        c.r[i.rd] = uint32_t(r);
+        break;
+    }
     case Op::Svc:
         c.svc = i.imm;
         break;

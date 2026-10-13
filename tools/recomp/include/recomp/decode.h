@@ -78,6 +78,33 @@ enum class Op : uint8_t {
     Mrs,
     Msr, // only the user-visible APSR flag view is modelled
     Bkpt,
+    // ARMv6 media and ARMv5E DSP
+    Par,
+    Sel,
+    Pkh,
+    Ssat,
+    Usat,
+    Ssat16,
+    Usat16,
+    Sxtb16,
+    Uxtb16,
+    Sxtab16,
+    Uxtab16,
+    Usad8,
+    Usada8,
+    Smlad,
+    Smlsd,
+    Smlald,
+    Smlsld,
+    Smmla,
+    Smmls,
+    Qadd,
+    Qsub,
+    Qdadd,
+    Qdsub,
+    Smla,
+    Smlaw,
+    Smlal16, // SMUL/SMLA xy, SMULW/SMLAW y, SMLAL xy (acc flag distinguishes the SMUL forms)
 };
 
 enum class Shift : uint8_t { Lsl, Lsr, Asr, Ror, Rrx };
@@ -102,7 +129,9 @@ struct Insn {
     // load/store
     bool pre = false, up = false, wb = false, regOffset = false;
     uint16_t regList = 0;
-    uint8_t rot = 0; // extend rotation (0,8,16,24)
+    uint8_t rot = 0;           // extend rotation (0,8,16,24)
+    uint8_t sub = 0, sub2 = 0; // Par: kind (S,Q,SH,U,UQ,UH) / op (ADD16,ASX,SAX,SUB16,ADD8,SUB8)
+    bool fx = false, fy = false, acc = false; // media flags: exchange/x-half/round, y-half, accumulate
     // control flow
     uint32_t target = 0; // B/BL/BLX imm
     bool targetThumb = false;
