@@ -15,9 +15,10 @@ typedef struct RcCtx {
     uint32_t thumb;      /* 1 when the next pc is Thumb code */
     uint32_t excl_valid; /* local exclusive monitor */
     uint32_t excl_addr;
-    uint32_t tls;  /* CP15 c13 c0 3 (user read-only thread pointer) */
-    uint32_t svc;  /* pending SVC number (set by emitted code, consumed by dispatcher) */
-    uint32_t trap; /* non-zero when emitted code hit something it cannot execute */
+    uint32_t tls;         /* CP15 c13 c0 3 (user read-only thread pointer) */
+    uint32_t svc;         /* SVC number of the last executed SVC */
+    uint32_t svc_pending; /* set to 1 by an executed SVC; the dispatcher clears it after servicing */
+    uint32_t trap;        /* non-zero when emitted code hit something it cannot execute */
     uint32_t trap_pc;
     uint32_t fpscr; /* VFP status (see issue #6) */
     uint32_t s[32]; /* VFP single registers S0-S31 (D<n> = s[2n] low word, s[2n+1] high word) */

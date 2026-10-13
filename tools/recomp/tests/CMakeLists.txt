@@ -26,3 +26,15 @@ add_custom_command(
 add_executable(recomp_fault_test fault_test.cpp ${CMAKE_CURRENT_BINARY_DIR}/fault_blocks.c)
 target_link_libraries(recomp_fault_test PRIVATE pokerecomp_runtime)
 add_test(NAME recomp_fault COMMAND recomp_fault_test)
+
+# Dispatcher: block discovery -> emitted C -> runtime dispatcher with interpreter fallback
+add_executable(recomp_gendispatch gen_dispatch.cpp)
+target_link_libraries(recomp_gendispatch PRIVATE recomp)
+add_custom_command(
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/dispatch_blocks.c
+  COMMAND recomp_gendispatch ${CMAKE_CURRENT_BINARY_DIR}/dispatch_blocks.c
+  DEPENDS recomp_gendispatch
+  COMMENT "Discovering blocks and emitting C for the dispatcher test")
+add_executable(recomp_dispatch_test dispatch_test.cpp ${CMAKE_CURRENT_BINARY_DIR}/dispatch_blocks.c)
+target_link_libraries(recomp_dispatch_test PRIVATE pokerecomp_runtime)
+add_test(NAME recomp_dispatch COMMAND recomp_dispatch_test)

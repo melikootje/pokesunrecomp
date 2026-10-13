@@ -761,7 +761,7 @@ struct Emitter {
             break;
         }
         case Op::Svc:
-            line(fmt("c->svc = %uu;", i.imm));
+            line(fmt("c->svc = %uu; c->svc_pending = 1;", i.imm));
             break;
         case Op::Nop:
         case Op::Pld:

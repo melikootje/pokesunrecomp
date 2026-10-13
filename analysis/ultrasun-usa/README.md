@@ -85,3 +85,23 @@ Name recovery for non-virtual functions, caller-based attribution for the remain
 jump-table targets, and the `build_reconstruction_obligation_ledger` / `evaluate_reconstruction_coverage`
 workflow (it requires owner modules, verifier contracts and fixtures that exist only once the recompiler
 does). Open questions are tracked in REA's unknown ledger (domains `hle-services`, `recompiler-analysis`).
+
+## Third pass: block discovery and dispatch (issue #7)
+- `jump_table_targets.json`: 434 bounded jump tables recovered by `recomp::recoverJumpTable` (4,726 targets),
+  from the 511 dispatch sites found by the instruction scan. Pattern: `cmp rX,#N` then `ldrls/ldrcc pc,[pc,rX,lsl #2]`
+  (LS: N+1 entries, CC: N entries) with the table at site+8. Cross-checked against REA's independent jump-table
+  analysis: sites 0x10576c (`ev_11cba90f3201f2fc8f4f537191034e05e9dbc7614694fbddb7c9304fcfc6d49b`), 0x259ae4
+  (`ev_fa30d15d9630e3f499f2fe2a27cbd878777720f413ad0702a70394b32de1b5c8`) and 0x4c4b64
+  (`ev_170c4c0e39644ce4f7d4ef6a718ee6faabe963e9a38a97b7a1f2fcd31f7b51ea`) match exactly. At 0x4356ec
+  (`ev_7858cec1fe975d6c54913b241db340cbeb15e7cac53dfafcaec7a8190a84eba6`) the table words read from the image
+  (5 entries) agree with this recovery, while REA's medium-confidence list adds one extra target that appears in neither
+  raw table (REA reports it cannot separate two switches there). The other 77 scan hits are data/false positives or use other patterns; they run through the interpreter
+  fallback if ever reached.
+- Whole-image block discovery (`recomp_discover`, local): 210,622 blocks / 947,956 instructions from the 17,448
+  function entries plus recovered jump-table targets (2,509 Thumb blocks). Emitting C for every block (`recomp_translate`,
+  local output only) takes ~5 s and compiles cleanly (clang -O1, 107 translation units, ~42 s on 8 cores).
+- Running it (`boot_probe`, local): the recompiled image starts at its entry point, executes ~148k guest instructions
+  (100% recompiled, 0 interpreted) and reaches the CTR SDK start-up SVCs (CreateAddressArbiter, QueryMemory,
+  GetProcessInfo, ConnectToPort "srv:", SendSyncRequest with IPC header 0x10002 = srv:RegisterClient, GetResourceLimit,
+  CloseHandle) before spinning in a loop that waits for another thread to publish a function pointer (needs the
+  HLE scheduler, issue #9).

@@ -867,6 +867,7 @@ void step(RcCtx &c, Memory &m, const Insn &i) {
     }
     case Op::Svc:
         c.svc = i.imm;
+        c.svc_pending = 1;
         break;
     case Op::Nop:
     case Op::Pld:
