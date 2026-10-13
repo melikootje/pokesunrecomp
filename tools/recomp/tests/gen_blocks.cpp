@@ -12,9 +12,7 @@ int main(int argc, char **argv) {
     std::ofstream out(argv[2]);
     out << "#include \"harness_mem.h\"\n" << recomp::emitPrelude();
     for (size_t k = 0; k < vs.size(); k++) {
-        std::vector<recomp::Insn> insns;
-        for (size_t j = 0; j < vs[k].words.size(); j++)
-            insns.push_back(recomp::decodeArm(vs[k].words[j], vec::kCode + 4 * uint32_t(j)));
+        const std::vector<recomp::Insn> insns = vec::decodeVector(vs[k]);
         recomp::EmitOptions full;
         full.eliminateDeadFlags = false;
         recomp::EmitOptions dead;

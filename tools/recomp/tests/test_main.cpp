@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <string>
@@ -12,13 +13,16 @@
 extern "C" {
 uint8_t rc_test_window[0x10000];
 unsigned rc_test_faults = 0;
+uint32_t rc_test_last_fault = 0;
 uint8_t rc_test_scratch[16];
+uint8_t rc_test_code[0x1000];
 typedef void (*rc_fn)(RcCtx *);
 extern const rc_fn rc_vec_fns[][2];
 extern const unsigned rc_vec_count;
 }
 
 using namespace recomp;
+using vec::decodeVector;
 
 namespace {
 
@@ -26,6 +30,20 @@ void resetWindow() {
     for (uint32_t i = 0; i < vec::kWinSize; i++)
         rc_test_window[i] = vec::memf(vec::kWin + i);
     rc_test_faults = 0;
+}
+
+// Places the vector's instruction bytes at the code address so PC-relative loads see them.
+void loadCode(const vec::Vector &v) {
+    std::memset(rc_test_code, 0, sizeof rc_test_code);
+    for (size_t j = 0; j < v.words.size() && 4 * j + 4 <= sizeof rc_test_code; j++) {
+        if (v.thumbMode) {
+            rc_test_code[2 * j] = uint8_t(v.words[j]);
+            rc_test_code[2 * j + 1] = uint8_t(v.words[j] >> 8);
+        } else {
+            for (int b = 0; b < 4; b++)
+                rc_test_code[4 * j + b] = uint8_t(v.words[j] >> (8 * b));
+        }
+    }
 }
 
 class WinMem : public Memory {
@@ -49,6 +67,12 @@ void load(RcCtx &c, const vec::Vector &v) {
     c.tls = v.tls;
     c.q = (v.qge >> 4) & 1;
     c.ge = v.qge & 0xF;
+    c.thumb = v.thumbMode ? 1 : 0;
+    if (v.vfp) {
+        for (int i = 0; i < 32; i++)
+            c.s[i] = v.sInit[i];
+        c.fpscr = v.fpscrInit;
+    }
 }
 
 struct Result {
@@ -80,10 +104,23 @@ Result check(const RcCtx &c, const vec::Vector &v, bool flags) {
         std::snprintf(b, sizeof b, "q/ge got %x want %x", (c.q << 4) | c.ge, v.finalQge);
         return {b};
     }
+    if (v.vfp) {
+        for (int i = 0; i < 32; i++)
+            if (c.s[i] != v.sFinal[i]) {
+                std::snprintf(b, sizeof b, "s%d got %08x want %08x", i, c.s[i], v.sFinal[i]);
+                return {b};
+            }
+        if (c.fpscr != v.fpscrFinal) {
+            std::snprintf(b, sizeof b, "fpscr got %08x want %08x", c.fpscr, v.fpscrFinal);
+            return {b};
+        }
+    }
     if (c.trap)
         return {"trap"};
-    if (rc_test_faults)
-        return {"memory fault"};
+    if (rc_test_faults) {
+        std::snprintf(b, sizeof b, "memory fault at %08x", rc_test_last_fault);
+        return {b};
+    }
     std::map<uint32_t, uint8_t> got;
     for (uint32_t i = 0; i < vec::kWinSize; i++)
         if (rc_test_window[i] != vec::memf(vec::kWin + i))
@@ -122,18 +159,41 @@ int main(int argc, char **argv) {
             load(c, v);
             resetWindow();
             WinMem mem;
-            for (size_t j = 0; j < v.words.size(); j++)
-                step(c, mem, decodeArm(v.words[j], vec::kCode + 4 * uint32_t(j)));
+            loadCode(v);
+            for (const Insn &in : decodeVector(v))
+                step(c, mem, in);
             Result r = check(c, v, true);
             if (!r.ok()) {
                 if (failInterp < 10) {
-                    std::printf("interp vector %zu: %s\n", k, r.why.c_str());
-                    for (size_t j = 0; j < v.words.size(); j++)
-                        std::printf("    %s\n",
-                                    disasm(decodeArm(v.words[j], vec::kCode + 4 * uint32_t(j))).c_str());
+                    std::printf("interp vector %zu: %s%s\n", k, r.why.c_str(),
+                                v.vfp ? (" [fpscr_init=" + std::to_string(v.fpscrInit) + "]").c_str() : "");
+                    if (v.vfp && getenv("RC_DUMP_S")) {
+                        RcCtx dc;
+                        load(dc, v);
+                        resetWindow();
+                        WinMem dm;
+                        loadCode(v);
+                        for (const Insn &in : decodeVector(v))
+                            step(dc, dm, in);
+                        for (int q = 0; q < 32; q++)
+                            if (v.sInit[q] != v.sFinal[q] || dc.s[q] != v.sFinal[q])
+                                std::printf("      s%-2d init %08x want %08x got %08x\n", q, v.sInit[q],
+                                            v.sFinal[q], dc.s[q]);
+                    }
+                    if (v.vfp)
+                        std::printf("    init fpscr=%08x len=%u stride=%u rmode=%u fz=%u dn=%u\n",
+                                    v.fpscrInit, (v.fpscrInit >> 16) & 7, (v.fpscrInit >> 20) & 3,
+                                    (v.fpscrInit >> 22) & 3, (v.fpscrInit >> 24) & 1,
+                                    (v.fpscrInit >> 25) & 1);
+                    for (const Insn &in : decodeVector(v))
+                        std::printf("    %s\n", disasm(in).c_str());
                 }
-                for (uint32_t w : v.words)
-                    failByOp[opName(decodeArm(w, 0).op)]++;
+                for (const Insn &di : decodeVector(v)) {
+                    std::string key = opName(di.op);
+                    if (di.op == Op::Vfp)
+                        key += ":" + std::to_string(di.sub) + (di.dbl ? "d" : "s");
+                    failByOp[key]++;
+                }
                 failInterp++;
             }
         }
@@ -141,6 +201,7 @@ int main(int argc, char **argv) {
             RcCtx c;
             load(c, v);
             resetWindow();
+            loadCode(v);
             rc_vec_fns[k][variant](&c);
             Result r = check(c, v, variant == 0);
             if (!r.ok()) {

@@ -20,7 +20,7 @@ typedef struct RcCtx {
     uint32_t trap; /* non-zero when emitted code hit something it cannot execute */
     uint32_t trap_pc;
     uint32_t fpscr; /* VFP status (see issue #6) */
-    uint64_t d[16]; /* VFP double registers D0-D15 as raw bits (S regs alias low/high halves) */
+    uint32_t s[32]; /* VFP single registers S0-S31 (D<n> = s[2n] low word, s[2n+1] high word) */
     uint8_t *mem;   /* guest address 0 in host memory (base + addr fast path) */
 } RcCtx;
 

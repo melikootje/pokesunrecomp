@@ -102,6 +102,13 @@ enum class Op : uint8_t {
     Qsub,
     Qdadd,
     Qdsub,
+    Vfp,       // data processing: sub = RcVfpOp, dbl, vd/vn/vm
+    VfpMovRS,  // VMOV Sn<->Rt (fx: to core)
+    VfpMovRR,  // VMOV Rt,Rt2 <-> two S / one D (fx: to core)
+    VfpMrs,    // VMRS Rt, <imm>
+    VfpMsr,    // VMSR <imm>, Rt
+    VfpLdSt,   // VLDR / VSTR (fx: load)
+    VfpLdmStm, // VLDM / VSTM / VPUSH / VPOP (fx: load)
     Smla,
     Smlaw,
     Smlal16, // SMUL/SMLA xy, SMULW/SMLAW y, SMLAL xy (acc flag distinguishes the SMUL forms)
@@ -115,6 +122,8 @@ enum : uint8_t { FlagV = 1, FlagC = 2, FlagZ = 4, FlagN = 8, FlagAll = 15 };
 struct Insn {
     uint32_t word = 0;
     uint32_t pc = 0; // address of this instruction
+    bool thumb = false;
+    uint8_t size = 4; // bytes: 4 for ARM and Thumb BL/BLX pairs, 2 for other Thumb
     Op op = Op::Undef;
     uint8_t cond = 14; // 0..14 (15 never produced for executable instructions)
     bool setFlags = false;
@@ -129,21 +138,29 @@ struct Insn {
     // load/store
     bool pre = false, up = false, wb = false, regOffset = false;
     uint16_t regList = 0;
-    uint8_t rot = 0;           // extend rotation (0,8,16,24)
-    uint8_t sub = 0, sub2 = 0; // Par: kind (S,Q,SH,U,UQ,UH) / op (ADD16,ASX,SAX,SUB16,ADD8,SUB8)
+    uint8_t rot = 0;                // extend rotation (0,8,16,24)
+    uint8_t sub = 0, sub2 = 0;      // Par: kind (S,Q,SH,U,UQ,UH) / op (ADD16,ASX,SAX,SUB16,ADD8,SUB8)
+    uint8_t vd = 0, vn = 0, vm = 0; // VFP register numbers (S or D according to dbl)
+    bool dbl = false;
     bool fx = false, fy = false, acc = false; // media flags: exchange/x-half/round, y-half, accumulate
     // control flow
     uint32_t target = 0; // B/BL/BLX imm
     bool targetThumb = false;
     // liveness
-    uint8_t readsFlags = 0;  // flags read (including by the condition)
-    uint8_t writesFlags = 0; // flags written when executed
+    uint8_t readsFlags = 0;                                  // flags read (including by the condition)
+    uint8_t writesFlags = 0;                                 // flags written when executed
+    uint32_t pcRead() const { return pc + (thumb ? 4 : 8); } // value read for r15
+    uint32_t next() const { return pc + size; }
+    uint32_t link() const { return next() | (thumb ? 1u : 0u); } // value written to LR by BL/BLX
     // true when the instruction can change control flow (ends a block)
     bool endsBlock() const;
 };
 
 // Decodes one A32 word at `pc`. Unsupported/undefined encodings produce Op::Undef.
 Insn decodeArm(uint32_t word, uint32_t pc);
+// Decodes one Thumb instruction at pc. hw2 is the following halfword (used only by the 32-bit BL/BLX pair);
+// the result's size is 2 or 4.
+Insn decodeThumb(uint16_t hw, uint16_t hw2, uint32_t pc);
 
 const char *opName(Op op);
 std::string disasm(const Insn &i);

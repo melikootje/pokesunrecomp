@@ -1,4 +1,5 @@
-set(VECTORS ${CMAKE_CURRENT_SOURCE_DIR}/vectors/arm.vec)
+set(RECOMP_VECTORS "${CMAKE_CURRENT_SOURCE_DIR}/vectors/arm.vec" CACHE FILEPATH "Reference vector file")
+set(VECTORS ${RECOMP_VECTORS})
 
 add_executable(recomp_genblocks gen_blocks.cpp)
 target_link_libraries(recomp_genblocks PRIVATE recomp)

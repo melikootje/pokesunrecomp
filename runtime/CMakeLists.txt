@@ -1,4 +1,4 @@
-add_library(pokerecomp_runtime STATIC src/runtime.cpp src/guest_memory.cpp)
+add_library(pokerecomp_runtime STATIC src/runtime.cpp src/guest_memory.cpp src/vfp.c)
 target_include_directories(pokerecomp_runtime PUBLIC include)
 if(POKE_BUILD_TESTS AND NOT ANDROID)
   add_executable(guest_memory_test tests/guest_memory_test.cpp)

@@ -54,16 +54,17 @@ std::string condExpr(unsigned c) {
 
 struct Emitter {
     std::string out;
+    bool thumbMode = false;
     void line(const std::string &s) { out += "    " + s + "\n"; }
 
-    std::string reg(const Insn &i, unsigned r) const { return r == 15 ? hex(i.pc + 8) : fmt("r%u", r); }
+    std::string reg(const Insn &i, unsigned r) const { return r == 15 ? hex(i.pcRead()) : fmt("r%u", r); }
     std::string regPc12(const Insn &i, unsigned r) const { return r == 15 ? hex(i.pc + 12) : fmt("r%u", r); }
 
     void jump(const std::string &v, bool interwork) {
         if (interwork) {
             line("{ uint32_t j = " + v + "; c->thumb = j & 1u; npc = j & ((j & 1u) ? ~1u : ~3u); }");
         } else {
-            line("npc = (" + v + ") & ~3u;");
+            line("npc = (" + v + ") & " + (thumbMode ? "~1u" : "~3u") + ";");
         }
     }
 
@@ -310,7 +311,7 @@ struct Emitter {
             else if (false)
                 line("(void)0;");
         } else {
-            const std::string sv = i.rd == 15 ? hex(i.pc + 8) : fmt("r%u", i.rd);
+            const std::string sv = i.rd == 15 ? hex(i.pcRead()) : fmt("r%u", i.rd);
             switch (i.op) {
             case Op::Str:
                 line("RC_ST32(c, addr & ~3u, " + sv + ");");
@@ -354,7 +355,7 @@ struct Emitter {
                 else
                     line(fmt("r%u = RC_LD32(c, ", r) + ad + ");");
             } else {
-                line("RC_ST32(c, " + ad + ", " + (r == 15 ? hex(i.pc + 8) : fmt("r%u", r)) + ");");
+                line("RC_ST32(c, " + ad + ", " + (r == 15 ? hex(i.pcRead()) : fmt("r%u", r)) + ");");
             }
             k++;
         }
@@ -466,6 +467,7 @@ struct Emitter {
     }
 
     void insn(const Insn &i, uint8_t need) {
+        thumbMode = i.thumb;
         const bool cond = i.cond != 14;
         line(fmt("/* %08x: %08x %s */", i.pc, i.word, opName(i.op)));
         if (cond)
@@ -542,18 +544,19 @@ struct Emitter {
             line("npc = " + hex(i.target) + ";");
             break;
         case Op::Bl:
-            line("r14 = " + hex(i.pc + 4) + "; npc = " + hex(i.target) + ";");
+            line("r14 = " + hex(i.link()) + "; npc = " + hex(i.target) + ";");
             break;
         case Op::Bx:
             jump(reg(i, i.rm), true);
             break;
         case Op::BlxReg:
             line("const uint32_t t = " + reg(i, i.rm) + ";");
-            line("r14 = " + hex(i.pc + 4) + ";");
+            line("r14 = " + hex(i.link()) + ";");
             jump("t", true);
             break;
         case Op::BlxImm:
-            line("r14 = " + hex(i.pc + 4) + "; c->thumb = 1; npc = " + hex(i.target) + ";");
+            line("r14 = " + hex(i.link()) + "; c->thumb = " + std::string(i.targetThumb ? "1" : "0") +
+                 "; npc = " + hex(i.target) + ";");
             break;
         case Op::Clz:
             line(fmt("r%u = r%u ? (uint32_t)__builtin_clz(r%u) : 32u;", i.rd, i.rm, i.rm));
@@ -656,7 +659,7 @@ struct Emitter {
         case Op::Smmls: {
             line(fmt("{ const int64_t prod = (int64_t)(int32_t)r%u * (int64_t)(int32_t)r%u;", i.rm, i.rs));
             line(std::string("  __int128 acc = ") +
-                 (i.acc ? fmt("(__int128)(int32_t)r%u << 32;", i.rn) : std::string("0;")));
+                 (i.acc ? fmt("(__int128)(int32_t)r%u * ((__int128)1 << 32);", i.rn) : std::string("0;")));
             line(std::string("  acc = acc ") + (i.op == Op::Smmls ? "- prod;" : "+ prod;"));
             if (i.fx)
                 line("  acc += 0x80000000ll;");
@@ -693,6 +696,68 @@ struct Emitter {
             if (i.acc)
                 line(fmt("  r += (int32_t)r%u; if (r != (int32_t)r) { c->q = 1; }", i.rn));
             line(fmt("  r%u = (uint32_t)r; }", i.rd));
+            break;
+        }
+        case Op::Vfp:
+            line(fmt("rc_vfp_data(c, %u, %u, %u, %u, %u);", i.sub, i.dbl ? 1 : 0, i.vd, i.vn, i.vm));
+            break;
+        case Op::VfpMovRS:
+            if (i.fx)
+                line(fmt("r%u = c->s[%u];", i.rd, i.vn));
+            else
+                line(fmt("c->s[%u] = r%u;", i.vn, i.rd));
+            break;
+        case Op::VfpMovRR: {
+            const unsigned idx = i.dbl ? 2u * i.vm : i.vm;
+            if (i.fx)
+                line(fmt("r%u = c->s[%u]; r%u = c->s[%u];", i.rd, idx, i.rn, idx + 1));
+            else
+                line(fmt("c->s[%u] = r%u; c->s[%u] = r%u;", idx, i.rd, idx + 1, i.rn));
+            break;
+        }
+        case Op::VfpMrs: {
+            const std::string v = i.imm == 1   ? "c->fpscr"
+                                  : i.imm == 0 ? "0x410120b4u"
+                                  : i.imm == 8 ? "0x40000000u"
+                                               : "0u";
+            if (i.rd == 15)
+                line("{ const uint32_t v = " + v +
+                     "; fn = v >> 31; fz = (v >> 30) & 1u; fc = (v >> 29) & 1u; fv = (v >> 28) & 1u; }");
+            else
+                line(fmt("r%u = ", i.rd) + v + ";");
+            break;
+        }
+        case Op::VfpMsr:
+            if (i.imm == 1)
+                line(fmt("c->fpscr = (c->fpscr & ~RC_FPSCR_WMASK) | (r%u & RC_FPSCR_WMASK);", i.rd));
+            else
+                line("(void)0;");
+            break;
+        case Op::VfpLdSt: {
+            const std::string base = i.rn == 15 ? hex((i.pc + 8) & ~3u) : fmt("r%u", i.rn);
+            line("const uint32_t a = " + base + (i.up ? " + " : " - ") + hex(i.imm) + ";");
+            const unsigned idx = i.dbl ? 2u * i.vd : i.vd;
+            for (unsigned k = 0; k < (i.dbl ? 2u : 1u); k++) {
+                if (i.fx)
+                    line(fmt("c->s[%u] = RC_LD32(c, a + %uu);", idx + k, 4 * k));
+                else
+                    line(fmt("RC_ST32(c, a + %uu, c->s[%u]);", 4 * k, idx + k));
+            }
+            break;
+        }
+        case Op::VfpLdmStm: {
+            line(fmt("const uint32_t base = r%u;", i.rn));
+            line(i.up ? "const uint32_t a0 = base;" : fmt("const uint32_t a0 = base - %uu;", 4 * i.imm));
+            const unsigned idx = i.dbl ? 2u * i.vd : i.vd;
+            for (unsigned k = 0; k < i.imm; k++) {
+                if (i.fx)
+                    line(fmt("c->s[%u] = RC_LD32(c, a0 + %uu);", idx + k, 4 * k));
+                else
+                    line(fmt("RC_ST32(c, a0 + %uu, c->s[%u]);", 4 * k, idx + k));
+            }
+            if (i.wb)
+                line(fmt("r%u = ", i.rn) +
+                     (i.up ? fmt("base + %uu;", 4 * i.imm) : fmt("base - %uu;", 4 * i.imm)));
             break;
         }
         case Op::Svc:
@@ -734,7 +799,7 @@ struct Emitter {
 
 std::string emitPrelude() {
     return "#include \"pokerecomp/cpu.h\"\n#include \"pokerecomp/rc_ops.h\"\n#include "
-           "\"pokerecomp/mem_fast.h\"\n\n";
+           "\"pokerecomp/mem_fast.h\"\n#include \"pokerecomp/vfp.h\"\n\n";
 }
 
 std::string emitBlockC(const std::vector<Insn> &insns, const std::string &name, const EmitOptions &opt) {
@@ -752,7 +817,7 @@ std::string emitBlockC(const std::vector<Insn> &insns, const std::string &name, 
     for (int r = 0; r < 15; r++)
         e.line(fmt("uint32_t r%d = c->r[%d];", r, r));
     e.line("uint32_t fn = c->n, fz = c->z, fc = c->c, fv = c->v;");
-    e.line(fmt("uint32_t npc = %s;", hex(insns.empty() ? 0 : insns.back().pc + 4).c_str()));
+    e.line(fmt("uint32_t npc = %s;", hex(insns.empty() ? 0 : insns.back().next()).c_str()));
     for (size_t k = 0; k < insns.size(); k++)
         e.insn(insns[k], liveAfter[k]);
     for (int r = 0; r < 15; r++)

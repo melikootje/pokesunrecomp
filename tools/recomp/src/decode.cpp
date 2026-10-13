@@ -1,5 +1,7 @@
 #include "recomp/decode.h"
 
+#include "pokerecomp/vfp.h"
+
 #include <cstdio>
 
 namespace recomp {
@@ -51,6 +53,8 @@ void finishFlags(Insn &i) {
     } else if (i.setFlags && (i.op == Op::Mul || i.op == Op::Mla || i.op == Op::Umull || i.op == Op::Umlal ||
                               i.op == Op::Smull || i.op == Op::Smlal)) {
         i.writesFlags = FlagN | FlagZ;
+    } else if (i.op == Op::VfpMrs && i.rd == 15) {
+        i.writesFlags = FlagAll;
     } else if (i.op == Op::Mrs) {
         i.readsFlags |= FlagAll;
     } else if (i.op == Op::Msr) {
@@ -66,6 +70,210 @@ Insn undef(uint32_t w, uint32_t pc) {
     i.op = Op::Undef;
     finishFlags(i);
     return i;
+}
+
+// Decodes VFPv2 (coprocessors 10/11). Returns false for anything that is not a modelled VFP encoding.
+bool decodeVfp(Insn &i, uint32_t w) {
+    const uint32_t cp = (w >> 8) & 0xF;
+    if (cp != 10 && cp != 11)
+        return false;
+    const bool dbl = cp == 11;
+    const uint32_t D = (w >> 22) & 1, N = (w >> 7) & 1, M = (w >> 5) & 1;
+    const uint32_t Vd = (w >> 12) & 0xF, Vn = (w >> 16) & 0xF, Vm = w & 0xF;
+    auto sreg = [](uint32_t v, uint32_t b) { return uint8_t((v << 1) | b); };
+    i.dbl = dbl;
+    const uint32_t cls = (w >> 25) & 7;
+    if (cls == 6) {
+        if ((w & 0x0FE00000) == 0x0C400000) { // VMOV Rt,Rt2 <-> two S / one D
+            if ((w & 0xD0) != 0x10)
+                return false;
+            i.op = Op::VfpMovRR;
+            i.fx = (w >> 20) & 1;
+            i.rd = (w >> 12) & 0xF;
+            i.rn = (w >> 16) & 0xF;
+            if (dbl) {
+                if (M)
+                    return false;
+                i.vm = uint8_t(Vm);
+            } else {
+                i.vm = sreg(Vm, M);
+                if (i.vm == 31)
+                    return false;
+            }
+            return true;
+        }
+        if ((w & 0x0F200000) == 0x0D000000) { // VLDR / VSTR
+            i.op = Op::VfpLdSt;
+            i.fx = (w >> 20) & 1;
+            i.up = (w >> 23) & 1;
+            i.rn = (w >> 16) & 0xF;
+            i.imm = (w & 0xFF) * 4;
+            if (dbl) {
+                if (D)
+                    return false;
+                i.vd = uint8_t(Vd);
+            } else {
+                i.vd = sreg(Vd, D);
+            }
+            return true;
+        }
+        const uint32_t P = (w >> 24) & 1, U = (w >> 23) & 1, W = (w >> 21) & 1;
+        const bool ia = !P && U, db = P && !U && W;
+        if (!ia && !db)
+            return false;
+        i.op = Op::VfpLdmStm;
+        i.fx = (w >> 20) & 1;
+        i.pre = P;
+        i.up = U;
+        i.wb = W;
+        i.rn = (w >> 16) & 0xF;
+        i.imm = w & 0xFF; // words
+        if (i.imm == 0)
+            return false;
+        if (dbl) {
+            if (D || (i.imm & 1) || Vd + i.imm / 2 > 16)
+                return false; // FLDMX/FSTMX (odd count) not modelled
+            i.vd = uint8_t(Vd);
+        } else {
+            i.vd = sreg(Vd, D);
+            if (i.vd + i.imm > 32)
+                return false;
+        }
+        return true;
+    }
+    if (cls != 7 || (w & (1u << 24)))
+        return false;
+    if ((w & 0x10) == 0) { // data processing
+        const uint32_t pqrs =
+            (((w >> 23) & 1) << 3) | (((w >> 21) & 1) << 2) | (((w >> 20) & 1) << 1) | ((w >> 6) & 1);
+        auto regs = [&]() {
+            if (dbl) {
+                // in the extension space (pqrs == 15) bit 7 is part of the opcode, not a register bit
+                if (D || (N && pqrs != 15) || M)
+                    return false;
+                i.vd = uint8_t(Vd);
+                i.vn = uint8_t(Vn);
+                i.vm = uint8_t(Vm);
+            } else {
+                i.vd = sreg(Vd, D);
+                i.vn = sreg(Vn, N);
+                i.vm = sreg(Vm, M);
+            }
+            return true;
+        };
+        i.op = Op::Vfp;
+        if (pqrs != 15) {
+            static const uint8_t map[9] = {RC_V_MLA,  RC_V_MLS, RC_V_NMLS, RC_V_NMLA, RC_V_MUL,
+                                           RC_V_NMUL, RC_V_ADD, RC_V_SUB,  RC_V_DIV};
+            // pqrs: 0000 MLA, 0001 MLS, 0010 NMLS, 0011 NMLA, 0100 MUL, 0101 NMUL, 0110 ADD, 0111 SUB, 1000
+            // DIV
+            if (pqrs > 8)
+                return false;
+            i.sub = map[pqrs];
+            return regs();
+        }
+        const uint32_t opc2 = Vn, opc3 = (w >> 6) & 3;
+        switch (opc2) {
+        case 0:
+            i.sub = opc3 == 1 ? RC_V_MOV : opc3 == 3 ? RC_V_ABS : 99;
+            break;
+        case 1:
+            i.sub = opc3 == 1 ? RC_V_NEG : opc3 == 3 ? RC_V_SQRT : 99;
+            break;
+        case 4:
+            i.sub = opc3 == 1 ? RC_V_CMP : opc3 == 3 ? RC_V_CMPE : 99;
+            break;
+        case 5:
+            if (Vm != 0 || M)
+                return false;
+            i.sub = opc3 == 1 ? RC_V_CMPZ : opc3 == 3 ? RC_V_CMPEZ : 99;
+            break;
+        case 7:
+            if (opc3 != 3)
+                return false;
+            i.sub = RC_V_CVT_DS;
+            if (dbl) { // double -> single
+                if (M)
+                    return false;
+                i.vd = sreg(Vd, D);
+                i.vm = uint8_t(Vm);
+            } else { // single -> double
+                if (D)
+                    return false;
+                i.vd = uint8_t(Vd);
+                i.vm = sreg(Vm, M);
+            }
+            return true;
+        case 8:
+            if (!(opc3 & 1))
+                return false;
+            i.sub = (opc3 & 2) ? RC_V_CVT_S2F : RC_V_CVT_U2F;
+            if (dbl) {
+                if (D)
+                    return false;
+                i.vd = uint8_t(Vd);
+            } else {
+                i.vd = sreg(Vd, D);
+            }
+            i.vm = sreg(Vm, M);
+            return true;
+        case 12:
+        case 13: {
+            if (!(opc3 & 1))
+                return false;
+            const bool rz = opc3 & 2;
+            i.sub =
+                opc2 == 12 ? (rz ? RC_V_CVT_F2U_RZ : RC_V_CVT_F2U) : (rz ? RC_V_CVT_F2S_RZ : RC_V_CVT_F2S);
+            i.vd = sreg(Vd, D);
+            if (dbl) {
+                if (M)
+                    return false;
+                i.vm = uint8_t(Vm);
+            } else {
+                i.vm = sreg(Vm, M);
+            }
+            return true;
+        }
+        default:
+            return false;
+        }
+        if (i.sub == 99)
+            return false;
+        if (opc2 == 5) { // compare with zero: only Fd is used
+            if (dbl) {
+                if (D)
+                    return false;
+                i.vd = uint8_t(Vd);
+            } else
+                i.vd = sreg(Vd, D);
+            return true;
+        }
+        if (opc2 == 4) { // compare: Fd vs Fm
+            return regs();
+        }
+        return regs();
+    }
+    // register transfers (bit 4 set)
+    if ((w & 0x0FE00F7F) == 0x0E000A10 && !dbl) { // VMOV Sn <-> Rt
+        i.op = Op::VfpMovRS;
+        i.fx = (w >> 20) & 1;
+        i.rd = (w >> 12) & 0xF;
+        i.vn = sreg(Vn, N);
+        return true;
+    }
+    if ((w & 0x0FF00FFF) == 0x0EF00A10) {
+        i.op = Op::VfpMrs;
+        i.rd = (w >> 12) & 0xF;
+        i.imm = Vn;
+        return true;
+    }
+    if ((w & 0x0FF00FFF) == 0x0EE00A10) {
+        i.op = Op::VfpMsr;
+        i.rd = (w >> 12) & 0xF;
+        i.imm = Vn;
+        return true;
+    }
+    return false;
 }
 
 } // namespace
@@ -125,6 +333,317 @@ bool Insn::endsBlock() const {
         op == Op::MrcTls || op == Op::Mrs)
         return rd == 15;
     return false;
+}
+
+// ---- Thumb (ARMv6K Thumb-1 + BL/BLX pair + ARMv6 extend/reverse) mapped onto the common Insn model ----
+Insn decodeThumb(uint16_t h, uint16_t h2, uint32_t pc) {
+    Insn i;
+    i.thumb = true;
+    i.size = 2;
+    i.word = h;
+    i.pc = pc;
+    i.cond = 14;
+    i.up = true;
+    const unsigned rd3 = h & 7, rm3 = (h >> 3) & 7, rn3 = (h >> 6) & 7;
+    // Loads/stores use a pre-indexed immediate/register offset without writeback.
+    auto xfer = [&](Op op, unsigned rt, unsigned rn, uint32_t immOff) {
+        i.op = op;
+        i.rd = uint8_t(rt);
+        i.rn = uint8_t(rn);
+        i.pre = true;
+        i.up = true;
+        i.wb = false;
+        i.imm = immOff;
+    };
+    auto dp = [&](Op op, unsigned rd, unsigned rn, bool s) {
+        i.op = op;
+        i.rd = uint8_t(rd);
+        i.rn = uint8_t(rn);
+        i.setFlags = s;
+        i.immOperand = false;
+        i.shift = Shift::Lsl;
+        i.shiftAmt = 0;
+    };
+    auto dpImm = [&](Op op, unsigned rd, unsigned rn, uint32_t imm, bool s) {
+        dp(op, rd, rn, s);
+        i.immOperand = true;
+        i.imm = imm;
+        i.immCarryDefined = false;
+    };
+    switch (h >> 11) {
+    case 0:   // LSL imm
+    case 1:   // LSR imm
+    case 2: { // ASR imm
+        dp(Op::Mov, rd3, 0, true);
+        i.rm = uint8_t(rm3);
+        const unsigned amt = (h >> 6) & 31;
+        i.shift = (h >> 11) == 0 ? Shift::Lsl : (h >> 11) == 1 ? Shift::Lsr : Shift::Asr;
+        i.shiftAmt = uint8_t(amt == 0 && i.shift != Shift::Lsl ? 32 : amt);
+        break;
+    }
+    case 3: { // ADD/SUB reg or imm3
+        const bool sub = (h >> 9) & 1, imm = (h >> 10) & 1;
+        if (imm)
+            dpImm(sub ? Op::Sub : Op::Add, rd3, rm3, rn3, true);
+        else {
+            dp(sub ? Op::Sub : Op::Add, rd3, rm3, true);
+            i.rm = uint8_t(rn3);
+        }
+        break;
+    }
+    case 4:
+        dpImm(Op::Mov, (h >> 8) & 7, 0, h & 0xFF, true);
+        break;
+    case 5:
+        dpImm(Op::Cmp, (h >> 8) & 7, (h >> 8) & 7, h & 0xFF, true);
+        break;
+    case 6:
+        dpImm(Op::Add, (h >> 8) & 7, (h >> 8) & 7, h & 0xFF, true);
+        break;
+    case 7:
+        dpImm(Op::Sub, (h >> 8) & 7, (h >> 8) & 7, h & 0xFF, true);
+        break;
+    case 8: {
+        if ((h & 0xFC00) == 0x4000) { // ALU operations
+            const unsigned op = (h >> 6) & 15;
+            switch (op) {
+            case 0:
+                dp(Op::And, rd3, rd3, true);
+                i.rm = uint8_t(rm3);
+                break;
+            case 1:
+                dp(Op::Eor, rd3, rd3, true);
+                i.rm = uint8_t(rm3);
+                break;
+            case 2:
+            case 3:
+            case 4:
+            case 7: { // shifts by register: MOVS Rd, Rd, <shift> Rs
+                dp(Op::Mov, rd3, 0, true);
+                i.rm = uint8_t(rd3);
+                i.rs = uint8_t(rm3);
+                i.shiftByReg = true;
+                i.shift = op == 2 ? Shift::Lsl : op == 3 ? Shift::Lsr : op == 4 ? Shift::Asr : Shift::Ror;
+                break;
+            }
+            case 5:
+                dp(Op::Adc, rd3, rd3, true);
+                i.rm = uint8_t(rm3);
+                break;
+            case 6:
+                dp(Op::Sbc, rd3, rd3, true);
+                i.rm = uint8_t(rm3);
+                break;
+            case 8:
+                dp(Op::Tst, 0, rd3, true);
+                i.rm = uint8_t(rm3);
+                break;
+            case 9:
+                dpImm(Op::Rsb, rd3, rm3, 0, true);
+                break; // NEG
+            case 10:
+                dp(Op::Cmp, 0, rd3, true);
+                i.rm = uint8_t(rm3);
+                break;
+            case 11:
+                dp(Op::Cmn, 0, rd3, true);
+                i.rm = uint8_t(rm3);
+                break;
+            case 12:
+                dp(Op::Orr, rd3, rd3, true);
+                i.rm = uint8_t(rm3);
+                break;
+            case 13: // MULS Rd, Rm, Rd
+                i.op = Op::Mul;
+                i.rd = uint8_t(rd3);
+                i.rm = uint8_t(rm3);
+                i.rs = uint8_t(rd3);
+                i.setFlags = true;
+                break;
+            case 14:
+                dp(Op::Bic, rd3, rd3, true);
+                i.rm = uint8_t(rm3);
+                break;
+            default:
+                dp(Op::Mvn, rd3, 0, true);
+                i.rm = uint8_t(rm3);
+                break;
+            }
+            break;
+        }
+        // 0100 01xx: high register operations / BX / BLX
+        const unsigned rd = rd3 | ((h >> 4) & 8), rm = (h >> 3) & 15;
+        switch ((h >> 8) & 3) {
+        case 0:
+            dp(Op::Add, rd, rd, false);
+            i.rm = uint8_t(rm);
+            break;
+        case 1:
+            dp(Op::Cmp, 0, rd, true);
+            i.rm = uint8_t(rm);
+            break;
+        case 2:
+            dp(Op::Mov, rd, 0, false);
+            i.rm = uint8_t(rm);
+            break;
+        default:
+            if (h & 7) {
+                i.op = Op::Undef;
+                break;
+            }
+            if (rm == 15) {
+                i.op = Op::Undef;
+                break;
+            }
+            i.op = (h & 0x80) ? Op::BlxReg : Op::Bx;
+            i.rm = uint8_t(rm);
+            break;
+        }
+        break;
+    }
+    case 9: { // LDR literal: address = Align(pc + 4, 4) + imm8 * 4, expressed relative to the raw pc + 4 read
+        const uint32_t adj = ((pc + 4) & ~3u) - (pc + 4);
+        xfer(Op::Ldr, (h >> 8) & 7, 15, (h & 0xFF) * 4 + adj);
+        break;
+    }
+    case 10:
+    case 11: { // load/store register offset
+        static const Op ops[8] = {Op::Str, Op::Strh, Op::Strb, Op::Ldrsb,
+                                  Op::Ldr, Op::Ldrh, Op::Ldrb, Op::Ldrsh};
+        xfer(ops[(h >> 9) & 7], rd3, rm3, 0);
+        i.regOffset = true;
+        i.rm = uint8_t(rn3);
+        i.shift = Shift::Lsl;
+        i.shiftAmt = 0;
+        break;
+    }
+    case 12:
+        xfer(Op::Str, rd3, rm3, ((h >> 6) & 31) * 4);
+        break;
+    case 13:
+        xfer(Op::Ldr, rd3, rm3, ((h >> 6) & 31) * 4);
+        break;
+    case 14:
+        xfer(Op::Strb, rd3, rm3, (h >> 6) & 31);
+        break;
+    case 15:
+        xfer(Op::Ldrb, rd3, rm3, (h >> 6) & 31);
+        break;
+    case 16:
+        xfer(Op::Strh, rd3, rm3, ((h >> 6) & 31) * 2);
+        break;
+    case 17:
+        xfer(Op::Ldrh, rd3, rm3, ((h >> 6) & 31) * 2);
+        break;
+    case 18:
+        xfer(Op::Str, (h >> 8) & 7, 13, (h & 0xFF) * 4);
+        break;
+    case 19:
+        xfer(Op::Ldr, (h >> 8) & 7, 13, (h & 0xFF) * 4);
+        break;
+    case 20: { // ADD Rd, PC, #imm8*4 (ADR)
+        const uint32_t adj = ((pc + 4) & ~3u) - (pc + 4);
+        dpImm(Op::Add, (h >> 8) & 7, 15, (h & 0xFF) * 4 + adj, false);
+        break;
+    }
+    case 21:
+        dpImm(Op::Add, (h >> 8) & 7, 13, (h & 0xFF) * 4, false);
+        break;
+    case 22:
+    case 23: {
+        if ((h & 0xFF00) == 0xB000) { // ADD/SUB SP, #imm7*4
+            dpImm((h & 0x80) ? Op::Sub : Op::Add, 13, 13, (h & 0x7F) * 4, false);
+        } else if ((h & 0xFE00) == 0xB400 || (h & 0xFE00) == 0xBC00) { // PUSH / POP
+            const bool pop = (h & 0x0800) != 0;
+            i.regList = uint16_t(h & 0xFF);
+            if (h & 0x100)
+                i.regList |= pop ? 0x8000 : 0x4000;
+            if (i.regList == 0) {
+                i.op = Op::Undef;
+                break;
+            }
+            i.op = pop ? Op::Ldm : Op::Stm;
+            i.rn = 13;
+            i.pre = !pop;
+            i.up = pop;
+            i.wb = true;
+        } else if ((h & 0xFF00) == 0xB200) { // SXTH / SXTB / UXTH / UXTB
+            static const Op ops[4] = {Op::Sxth, Op::Sxtb, Op::Uxth, Op::Uxtb};
+            i.op = ops[(h >> 6) & 3];
+            i.rd = uint8_t(rd3);
+            i.rm = uint8_t(rm3);
+            i.rot = 0;
+        } else if ((h & 0xFF00) == 0xBA00 && ((h >> 6) & 3) != 2) { // REV / REV16 / REVSH
+            const unsigned k = (h >> 6) & 3;
+            i.op = k == 0 ? Op::Rev : k == 1 ? Op::Rev16 : Op::Revsh;
+            i.rd = uint8_t(rd3);
+            i.rm = uint8_t(rm3);
+        } else {
+            i.op = Op::Undef;
+        }
+        break;
+    }
+    case 24:
+    case 25: { // STMIA / LDMIA Rn!, {list}
+        const bool load = (h >> 11) & 1;
+        i.regList = uint16_t(h & 0xFF);
+        if (i.regList == 0) {
+            i.op = Op::Undef;
+            break;
+        }
+        i.op = load ? Op::Ldm : Op::Stm;
+        i.rn = uint8_t((h >> 8) & 7);
+        i.pre = false;
+        i.up = true;
+        i.wb = !(load && (i.regList & (1u << i.rn)));
+        break;
+    }
+    case 26:
+    case 27: {
+        const unsigned cond = (h >> 8) & 15;
+        if (cond == 15) {
+            i.op = Op::Svc;
+            i.imm = h & 0xFF;
+        } else if (cond == 14) {
+            i.op = Op::Undef;
+        } else {
+            i.op = Op::B;
+            i.cond = uint8_t(cond);
+            i.target = pc + 4 + uint32_t(int32_t(int8_t(h & 0xFF))) * 2;
+        }
+        break;
+    }
+    case 28: // B
+        i.op = Op::B;
+        i.target = pc + 4 + uint32_t(int32_t(int16_t((h & 0x7FF) << 5) >> 4));
+        break;
+    case 30: { // BL / BLX prefix + suffix
+        const bool bl = (h2 >> 11) == 0x1F, blx = (h2 >> 11) == 0x1D && !(h2 & 1);
+        if (!bl && !blx) {
+            i.op = Op::Undef;
+            break;
+        }
+        const int32_t hi = int32_t(int16_t((h & 0x7FF) << 5) >> 5); // sign-extended imm11
+        const uint32_t off = uint32_t(hi) * 4096u + (uint32_t(h2 & 0x7FF) << 1);
+        i.size = 4;
+        i.word = (uint32_t(h) << 16) | h2;
+        if (bl) {
+            i.op = Op::Bl;
+            i.target = pc + 4 + off;
+            i.targetThumb = true;
+        } else {
+            i.op = Op::BlxImm;
+            i.target = (pc + 4 + off) & ~3u;
+            i.targetThumb = false;
+        }
+        break;
+    }
+    default:
+        i.op = Op::Undef;
+        break; // 11101 (BLX suffix alone) / 11111 (BL suffix alone)
+    }
+    finishFlags(i);
+    return i;
 }
 
 Insn decodeArm(uint32_t w, uint32_t pc) {
@@ -558,6 +1077,10 @@ Insn decodeArm(uint32_t w, uint32_t pc) {
         i.target = pc + 8 + uint32_t(off);
         break;
     }
+    case 6:
+        if (!decodeVfp(i, w))
+            i.op = Op::Undef;
+        break;
     case 7: {
         if (w & (1u << 24)) {
             i.op = Op::Svc;
@@ -574,6 +1097,8 @@ Insn decodeArm(uint32_t w, uint32_t pc) {
             i.op = Op::Barrier;
             break;
         }
+        if (decodeVfp(i, w))
+            break;
         i.op = Op::Undef;
         break;
     }
@@ -591,16 +1116,18 @@ Insn decodeArm(uint32_t w, uint32_t pc) {
 
 const char *opName(Op op) {
     static const char *names[] = {
-        "undef",  "and",     "eor",     "sub",    "rsb",    "add",    "adc",   "sbc",     "rsc",     "tst",
-        "teq",    "cmp",     "cmn",     "orr",    "mov",    "bic",    "mvn",   "mul",     "mla",     "umull",
-        "umlal",  "smull",   "smlal",   "umaal",  "ldr",    "str",    "ldrb",  "strb",    "ldrh",    "strh",
-        "ldrsb",  "ldrsh",   "ldrd",    "strd",   "ldm",    "stm",    "swp",   "swpb",    "ldrex",   "strex",
-        "ldrexb", "strexb",  "ldrexh",  "strexh", "ldrexd", "strexd", "clrex", "b",       "bl",      "bx",
-        "blx",    "blx",     "clz",     "rev",    "rev16",  "revsh",  "sxtb",  "sxth",    "uxtb",    "uxth",
-        "sxtab",  "sxtah",   "uxtab",   "uxtah",  "svc",    "nop",    "pld",   "barrier", "mrc-tls", "mrs",
-        "msr",    "bkpt",    "par",     "sel",    "pkh",    "ssat",   "usat",  "ssat16",  "usat16",  "sxtb16",
-        "uxtb16", "sxtab16", "uxtab16", "usad8",  "usada8", "smlad",  "smlsd", "smlald",  "smlsld",  "smmla",
-        "smmls",  "qadd",    "qsub",    "qdadd",  "qdsub",  "smla",   "smlaw", "smlal16"};
+        "undef",   "and",     "eor",       "sub",    "rsb",     "add",     "adc",      "sbc",      "rsc",
+        "tst",     "teq",     "cmp",       "cmn",    "orr",     "mov",     "bic",      "mvn",      "mul",
+        "mla",     "umull",   "umlal",     "smull",  "smlal",   "umaal",   "ldr",      "str",      "ldrb",
+        "strb",    "ldrh",    "strh",      "ldrsb",  "ldrsh",   "ldrd",    "strd",     "ldm",      "stm",
+        "swp",     "swpb",    "ldrex",     "strex",  "ldrexb",  "strexb",  "ldrexh",   "strexh",   "ldrexd",
+        "strexd",  "clrex",   "b",         "bl",     "bx",      "blx",     "blx",      "clz",      "rev",
+        "rev16",   "revsh",   "sxtb",      "sxth",   "uxtb",    "uxth",    "sxtab",    "sxtah",    "uxtab",
+        "uxtah",   "svc",     "nop",       "pld",    "barrier", "mrc-tls", "mrs",      "msr",      "bkpt",
+        "par",     "sel",     "pkh",       "ssat",   "usat",    "ssat16",  "usat16",   "sxtb16",   "uxtb16",
+        "sxtab16", "uxtab16", "usad8",     "usada8", "smlad",   "smlsd",   "smlald",   "smlsld",   "smmla",
+        "smmls",   "qadd",    "qsub",      "qdadd",  "qdsub",   "vfp",     "vfpmovrs", "vfpmovrr", "vfpmrs",
+        "vfpmsr",  "vfpldst", "vfpldmstm", "smla",   "smlaw",   "smlal16"};
     return names[uint8_t(op)];
 }
 

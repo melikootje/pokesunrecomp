@@ -8,14 +8,19 @@ extern "C" {
 #endif
 extern uint8_t rc_test_window[0x10000];
 extern unsigned rc_test_faults;
+extern uint32_t rc_test_last_fault;
 extern uint8_t rc_test_scratch[16];
+extern uint8_t rc_test_code[0x1000]; /* instruction bytes at 0x00100000 (read-only) */
 #ifdef __cplusplus
 }
 #endif
 
 static inline uint8_t *rc_t(uint32_t a, uint32_t n) {
+    if (a >= 0x00100000u && (uint64_t)a + n <= 0x00101000u)
+        return rc_test_code + (a - 0x00100000u);
     if (a < 0x20000000u || (uint64_t)a + n > 0x20010000u) {
         rc_test_faults++;
+        rc_test_last_fault = a;
         return rc_test_scratch;
     }
     return rc_test_window + (a - 0x20000000u);

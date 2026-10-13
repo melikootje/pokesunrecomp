@@ -1,5 +1,6 @@
 add_library(recomp STATIC src/decode.cpp src/interp.cpp src/emit_c.cpp)
 target_include_directories(recomp PUBLIC include ${CMAKE_SOURCE_DIR}/runtime/include)
+target_link_libraries(recomp PUBLIC pokerecomp_runtime)
 if(POKE_BUILD_TESTS)
   add_subdirectory(tests)
 endif()

@@ -1,5 +1,7 @@
 #include "recomp/interp.h"
 
+#include "pokerecomp/vfp.h"
+
 namespace recomp {
 namespace {
 
@@ -196,7 +198,7 @@ struct Exec {
     Memory &m;
     const Insn &i;
 
-    uint32_t pcRead() const { return i.pc + 8; }
+    uint32_t pcRead() const { return i.pcRead(); }
     uint32_t reg(unsigned r) const { return r == 15 ? pcRead() : c.r[r]; }
 
     void jump(uint32_t v, bool interwork) {
@@ -204,7 +206,7 @@ struct Exec {
             c.thumb = v & 1;
             c.r[15] = v & (c.thumb ? ~1u : ~3u);
         } else {
-            c.r[15] = v & ~3u;
+            c.r[15] = v & (i.thumb ? ~1u : ~3u);
         }
     }
 
@@ -361,7 +363,7 @@ struct Exec {
                 break;
             }
         } else {
-            const uint32_t sv = i.rd == 15 ? i.pc + 8 : c.r[i.rd];
+            const uint32_t sv = i.rd == 15 ? i.pcRead() : c.r[i.rd];
             switch (i.op) {
             case Op::Str:
                 m.w32(addr & ~3u, sv);
@@ -414,7 +416,7 @@ struct Exec {
                 } else
                     c.r[r] = v;
             } else {
-                m.w32(a, r == 15 ? i.pc + 8 : c.r[r]);
+                m.w32(a, r == 15 ? i.pcRead() : c.r[r]);
             }
             a += 4;
         }
@@ -532,7 +534,7 @@ struct Exec {
 } // namespace
 
 void step(RcCtx &c, Memory &m, const Insn &i) {
-    c.r[15] = i.pc + 4;
+    c.r[15] = i.next();
     if (i.op == Op::Undef) {
         c.trap = 1;
         c.trap_pc = i.pc;
@@ -618,7 +620,7 @@ void step(RcCtx &c, Memory &m, const Insn &i) {
         c.r[15] = i.target;
         break;
     case Op::Bl:
-        c.r[14] = i.pc + 4;
+        c.r[14] = i.link();
         c.r[15] = i.target;
         break;
     case Op::Bx:
@@ -626,13 +628,13 @@ void step(RcCtx &c, Memory &m, const Insn &i) {
         break;
     case Op::BlxReg: {
         const uint32_t t = x.reg(i.rm);
-        c.r[14] = i.pc + 4;
+        c.r[14] = i.link();
         x.jump(t, true);
         break;
     }
     case Op::BlxImm:
-        c.r[14] = i.pc + 4;
-        c.thumb = 1;
+        c.r[14] = i.link();
+        c.thumb = i.targetThumb;
         c.r[15] = i.target;
         break;
     case Op::Clz: {
@@ -756,7 +758,7 @@ void step(RcCtx &c, Memory &m, const Insn &i) {
     case Op::Smmla:
     case Op::Smmls: {
         const int64_t prod = int64_t(int32_t(c.r[i.rm])) * int64_t(int32_t(c.r[i.rs]));
-        __int128 acc = i.acc ? (__int128(int32_t(c.r[i.rn])) << 32) : 0;
+        __int128 acc = i.acc ? __int128(int32_t(c.r[i.rn])) * (__int128(1) << 32) : 0;
         acc = i.op == Op::Smmls ? acc - prod : acc + prod;
         if (i.fx)
             acc += 0x80000000ll;
@@ -798,6 +800,69 @@ void step(RcCtx &c, Memory &m, const Insn &i) {
         if (i.acc && r != int32_t(r))
             c.q = 1;
         c.r[i.rd] = uint32_t(r);
+        break;
+    }
+    case Op::Vfp:
+        rc_vfp_data(&c, i.sub, i.dbl, i.vd, i.vn, i.vm);
+        break;
+    case Op::VfpMovRS:
+        if (i.fx)
+            c.r[i.rd] = c.s[i.vn];
+        else
+            c.s[i.vn] = c.r[i.rd];
+        break;
+    case Op::VfpMovRR: {
+        const unsigned idx = i.dbl ? 2u * i.vm : i.vm;
+        if (i.fx) {
+            c.r[i.rd] = c.s[idx];
+            c.r[i.rn] = c.s[idx + 1];
+        } else {
+            c.s[idx] = c.r[i.rd];
+            c.s[idx + 1] = c.r[i.rn];
+        }
+        break;
+    }
+    case Op::VfpMrs: {
+        const uint32_t v = i.imm == 1 ? c.fpscr : i.imm == 0 ? 0x410120b4u : i.imm == 8 ? 0x40000000u : 0;
+        if (i.rd == 15) {
+            c.n = v >> 31;
+            c.z = (v >> 30) & 1;
+            c.c = (v >> 29) & 1;
+            c.v = (v >> 28) & 1;
+        } else {
+            c.r[i.rd] = v;
+        }
+        break;
+    }
+    case Op::VfpMsr:
+        if (i.imm == 1)
+            c.fpscr = (c.fpscr & ~RC_FPSCR_WMASK) | (c.r[i.rd] & RC_FPSCR_WMASK);
+        break;
+    case Op::VfpLdSt: {
+        const uint32_t base = i.rn == 15 ? (i.pc + 8) & ~3u : c.r[i.rn];
+        const uint32_t a = i.up ? base + i.imm : base - i.imm;
+        const unsigned idx = i.dbl ? 2u * i.vd : i.vd;
+        const unsigned words = i.dbl ? 2 : 1;
+        for (unsigned k = 0; k < words; k++) {
+            if (i.fx)
+                c.s[idx + k] = m.r32(a + 4 * k);
+            else
+                m.w32(a + 4 * k, c.s[idx + k]);
+        }
+        break;
+    }
+    case Op::VfpLdmStm: {
+        const uint32_t base = c.r[i.rn];
+        const uint32_t start = i.up ? base : base - 4 * i.imm;
+        const unsigned idx = i.dbl ? 2u * i.vd : i.vd;
+        for (unsigned k = 0; k < i.imm; k++) {
+            if (i.fx)
+                c.s[idx + k] = m.r32(start + 4 * k);
+            else
+                m.w32(start + 4 * k, c.s[idx + k]);
+        }
+        if (i.wb)
+            c.r[i.rn] = i.up ? base + 4 * i.imm : base - 4 * i.imm;
         break;
     }
     case Op::Svc:
