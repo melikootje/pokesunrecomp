@@ -65,7 +65,23 @@ image. **Only addresses, sizes, modes, numbers and hashes are committed; no code
 | 0x3a | GetResourceLimitCurrentValues | 1 |
 | 0x3c | Break | 1 |
 
+## Second pass (scripts: `tools/analysis/attribute_services.py`, `find_tables.py`, `classify.py`)
+- **IPC → service:** 155 stubs load their session handle from a global; 93 of those
+  are attributed to a service by matching the global to the init function that references the service-name
+  string (cam:u 34, y2r:u 21, ac:u 14, ir:USER 13, srv: 5, ndm:u 5, http:C 1). The attributed `srv:` headers (`0x10002`, `0x20000`, `0x90040`, `0xb0000`)
+  match the public srv command list. The remaining stubs receive the handle as an argument (class methods)
+  and need caller analysis; 5 handle globals have no matching init string.
+- **Vtables:** 578 vtables / 1,044 virtual slots recovered from C++ RTTI (`vtables.json`, mangled class names
+  from the binary). Spot-checked with REA (`ev_4a5cb0aef16c7cd3a77321a46376beb62478d9dde6a5a2b571aa07cb8143def5`).
+- **Jump tables:** 511 dispatch sites found by instruction scan (`jump_tables.json`); one confirmed by REA with
+  7 cases + default (`ev_11cba90f3201f2fc8f4f537191034e05e9dbc7614694fbddb7c9304fcfc6d49b`). Per-site
+  case targets/bounds are not yet extracted for all (issue #7).
+- **Literal pools:** 8,676 ranges / 73,044 bytes referenced by PC-relative loads in ARM functions (`classification.json`).
+- **HLE vs recompile (mechanical rule, see script):** {'recompile': 16514, 'svc_stub': 92, 'ipc_stub': 300, 'sdk_virtual': 542}. `svc_stub`/`ipc_stub` are replaced by runtime HLE;
+  `sdk_virtual` (virtuals of `nn::` classes) is decided per service later; everything else is recompiled.
+
 ## Not done (issue #4 remains open)
-Vtables/jump tables/literal pools, name recovery from RTTI, service attribution for IPC sites, HLE-vs-recompile
-split of CTR-SDK code, `symbols.json` names, and the obligation-ledger/coverage workflow. Open questions are
-tracked in REA's unknown ledger (domain `hle-services`, `recompiler-analysis`).
+Name recovery for non-virtual functions, caller-based attribution for the remaining IPC stubs, per-site
+jump-table targets, and the `build_reconstruction_obligation_ledger` / `evaluate_reconstruction_coverage`
+workflow (it requires owner modules, verifier contracts and fixtures that exist only once the recompiler
+does). Open questions are tracked in REA's unknown ledger (domains `hle-services`, `recompiler-analysis`).
