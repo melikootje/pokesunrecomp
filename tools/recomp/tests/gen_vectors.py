@@ -16,7 +16,7 @@ WIN = 0x20000000
 WIN_SIZE = 0x10000
 REGS = [UC_ARM_REG_R0 + i for i in range(13)] + [UC_ARM_REG_SP, UC_ARM_REG_LR]
 PTR = (8, 9, 10)                       # registers reserved as memory base pointers
-OFF = (11, 12)                         # registers reserved for memory offsets (never destinations)
+OFF = (11,)                         # registers reserved for memory offsets (never destinations)
 DATA = [0, 1, 2, 3, 4, 5, 6, 7, 13, 14]  # destination registers that never clobber pointers/offsets
 
 
@@ -235,7 +235,7 @@ def branch():
     if k in ("b", "bl"):
         off = rnd.randrange(-0x1000, 0x1000) & 0xFFFFFF
         return (c << 28) | (0b101 << 25) | ((1 if k == "bl" else 0) << 24) | off, []
-    rm = rnd.randrange(15)
+    rm = 12                                   # reserved branch-target register (never a destination or offset)
     return (c << 28) | (0x012FFF10 if k == "bx" else 0x012FFF30) | rm, [{"align": rm}]
 
 
