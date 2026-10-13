@@ -93,8 +93,8 @@ int main(int argc, char **argv) {
     for (const auto &t : kernel.trace()) {
         if (t.rfind("svc ", 0) == 0)
             svcHist[t.substr(4, 4)]++;
-        else if (t.rfind("ipc ", 0) == 0)
-            ipc.push_back(t.substr(4));
+        else if (t.rfind("ipc ", 0) == 0 || t.rfind("srv ", 0) == 0)
+            ipc.push_back(t);
     }
     std::printf("svcs=%" PRIu64 " ipc=%" PRIu64 " thread switches=%" PRIu64 " virtual ticks=%" PRIu64 "\n",
                 kernel.stats().svcs, kernel.stats().ipcRequests, kernel.stats().switches, kernel.ticks());

@@ -285,7 +285,7 @@ struct Emitter {
         if (isLoad) {
             switch (i.op) {
             case Op::Ldr:
-                line("const uint32_t v = rc_ror(RC_LD32(c, addr & ~3u), (addr & 3u) * 8u);");
+                line("const uint32_t v = RC_LD32(c, addr);");
                 break;
             case Op::Ldrb:
                 line("const uint32_t v = RC_LD8(c, addr);");
@@ -314,7 +314,7 @@ struct Emitter {
             const std::string sv = i.rd == 15 ? hex(i.pcRead()) : fmt("r%u", i.rd);
             switch (i.op) {
             case Op::Str:
-                line("RC_ST32(c, addr & ~3u, " + sv + ");");
+                line("RC_ST32(c, addr, " + sv + ");");
                 break;
             case Op::Strb:
                 line("RC_ST8(c, addr, (uint8_t)" + sv + ");");

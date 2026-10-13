@@ -16,8 +16,9 @@ Mutation checks (deliberately breaking ADC carry-in, flag liveness, Thumb BL tar
 Sanitizer builds (ASan/UBSan) are clean on the full set. CI runs the vectors with gcc (Linux) and clang (macOS).
 
 ## Known gaps (deliberately not generated, or unverified)
-- **Unaligned word access.** ARM11 behaviour depends on SCTLR.U and is not established for the 3DS; the
-  interpreter/emitter implement the legacy rotate for `LDR`/`SWP` and align-down for `STR`. Vectors stay aligned.
+- **Unaligned access.** `LDR`/`STR`/`LDRH`/`STRH` perform true unaligned accesses (SCTLR.U = 1, as on the 3DS);
+  Unicorn agrees on random vectors and the real game relies on it (it builds IPC service names with unaligned
+  loads). `LDM`/`STM`/`LDRD`/`STRD` and `SWP` keep the aligned/legacy behaviour and are only generated aligned.
 - **PC with register-controlled shifts, STM of PC, LDRD/STRD pairs touching PC/LR, Rd==Rn writeback:**
   UNPREDICTABLE in the ARM ARM; not generated.
 - **VFP short vectors.** The reference model mis-implements stride 2 (it writes two elements, spaced 4 apart) and

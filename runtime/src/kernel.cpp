@@ -466,11 +466,18 @@ class SrvService : public Service {
             std::memcpy(name, &r.cmd[1], 8);
             const uint32_t len = r.cmd[3];
             std::string n(name, std::min<size_t>(len, 8));
+            std::string shown = n;
+            for (char &ch : shown)
+                if (ch < 0x20 || ch > 0x7E)
+                    ch = '.'; // keep logs printable
+            const size_t nul = n.find('\0');
+            if (nul != std::string::npos)
+                n.resize(nul);
             Service *s = impl_->serviceFor(n);
             char raw[96];
             std::snprintf(raw, sizeof raw, " (len=%u words %08x %08x %08x %08x)", len, r.cmd[1], r.cmd[2],
                           r.cmd[3], r.cmd[4]);
-            impl_->trace("srv GetServiceHandle '" + n + "'" + raw);
+            impl_->trace("srv GetServiceHandle '" + shown + "'" + raw);
             r.reply(1, 2, kresult::Success);
             r.cmd[2] = 0;
             r.cmd[3] = impl_->newSession(s);

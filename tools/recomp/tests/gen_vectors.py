@@ -98,7 +98,7 @@ def ldst():
     if rnd.random() < 0.5:
         off = rnd.randrange(0x80) * 8 if (moves or not byte) else rnd.randrange(0x400)
         if not byte and not moves:
-            off = rnd.randrange(0x100) * 4
+            off = rnd.randrange(0x100) * 4 if rnd.random() < 0.6 else rnd.randrange(0x400)   # unaligned: true unaligned access
         w = (c << 28) | (0b010 << 25) | (pre << 24) | (up << 23) | (byte << 22) | (wb << 21) | (load << 20) | (rn << 16) | (rd << 12) | off
     else:
         rm = rnd.choice(OFF)

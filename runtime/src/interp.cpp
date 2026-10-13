@@ -343,7 +343,7 @@ struct Exec {
         if (isLoad) {
             switch (i.op) {
             case Op::Ldr:
-                v = load32(addr);
+                v = m.r32(addr); // SCTLR.U=1: true unaligned access
                 break;
             case Op::Ldrb:
                 v = m.r8(addr);
@@ -366,7 +366,7 @@ struct Exec {
             const uint32_t sv = i.rd == 15 ? i.pcRead() : c.r[i.rd];
             switch (i.op) {
             case Op::Str:
-                m.w32(addr & ~3u, sv);
+                m.w32(addr, sv);
                 break;
             case Op::Strb:
                 m.w8(addr, uint8_t(sv));
