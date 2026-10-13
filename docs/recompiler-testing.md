@@ -28,3 +28,9 @@ Sanitizer builds (ASan/UBSan) are clean on the full set. CI runs the vectors wit
 - **Reference ≠ hardware.** Unicorn is QEMU's model of the ARM11, not a 3DS. Agreement with it is strong
   evidence of ARM-ARM conformance, not proof of bit-identical hardware behaviour (e.g. VFP11 corner cases).
 - **Not covered yet:** Thumb-2 (not used by ARMv6K), CRO-relative code, indirect-branch dispatch (#7).
+
+## Faults
+Emitted blocks keep guest registers in locals and write them back at the end, so a fault inside a block
+(`GuestMemory::runGuarded` returns false with the guest address) loses that block's register updates. Faults in
+guest code are treated as fatal diagnostics, not recoverable events; `recomp_fault_test` checks that the guest
+address is reported correctly for loads from unmapped pages and stores to read-only pages.

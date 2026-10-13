@@ -14,3 +14,15 @@ add_executable(recomp_tests test_main.cpp ${CMAKE_CURRENT_BINARY_DIR}/gen_blocks
 target_include_directories(recomp_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(recomp_tests PRIVATE recomp)
 add_test(NAME recomp_vectors COMMAND recomp_tests ${VECTORS})
+
+# Emitted code on a real guest-memory reservation (fault reporting)
+add_executable(recomp_genfault gen_fault_blocks.cpp)
+target_link_libraries(recomp_genfault PRIVATE recomp)
+add_custom_command(
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/fault_blocks.c
+  COMMAND recomp_genfault ${CMAKE_CURRENT_BINARY_DIR}/fault_blocks.c
+  DEPENDS recomp_genfault
+  COMMENT "Emitting C for the fault test")
+add_executable(recomp_fault_test fault_test.cpp ${CMAKE_CURRENT_BINARY_DIR}/fault_blocks.c)
+target_link_libraries(recomp_fault_test PRIVATE pokerecomp_runtime)
+add_test(NAME recomp_fault COMMAND recomp_fault_test)
