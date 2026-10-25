@@ -582,6 +582,71 @@ int main() {
         CHECK(runProg(e, p) == RunResult::Fault);
         CHECK(e.kernel.lastFault().address == 0x30000004);
     }
+    // The guest allocates in 4 KiB pages even when the host uses bigger ones: two blocks 8 KiB apart must
+    // both map (they share a 16 KiB host page on Apple silicon), freeing one keeps its neighbour and zeroes
+    // itself.
+    {
+        Env e;
+        Prog p;
+        auto commit = [&](uint32_t addr, uint32_t op) {
+            p.a.mov(0, op);
+            p.a.ldrc(1, addr);
+            p.a.mov(2, 0);
+            p.a.ldrc(3, 0x1000);
+            p.a.mov(4, 3);
+            p.a.svc(0x01);
+        };
+        auto poke = [&](uint32_t addr, uint32_t v) {
+            p.a.ldrc(5, addr);
+            p.a.ldrc(6, v);
+            p.a.str(6, 5, 0);
+        };
+        auto peek = [&](uint32_t addr, uint32_t slot) {
+            p.a.ldrc(5, addr);
+            p.a.ldr(0, 5, 0);
+            p.storeR0(slot);
+        };
+        commit(0x10000000, 3);
+        p.storeR0(kRes);
+        commit(0x10002000, 3);
+        p.storeR0(kHandleA);
+        poke(0x10000010, 0xAAAA);
+        poke(0x10002010, 0xBBBB);
+        commit(0x10000000, 1); // free the first block
+        p.storeR0(kHandleB);
+        commit(0x10000000, 3); // and map it again
+        p.storeR0(kCount);
+        peek(0x10000010, kFlag);
+        peek(0x10002010, kEvt);
+        p.a.bx(14);
+        CHECK(runProg(e, p) == RunResult::AllExited);
+        CHECK(e.rd(kRes) == 0 && e.rd(kHandleA) == 0); // both commits succeed
+        CHECK(e.rd(kHandleB) == 0 && e.rd(kCount) == 0);
+        CHECK(e.rd(kFlag) == 0);     // the freed block reads as zero pages again
+        CHECK(e.rd(kEvt) == 0xBBBB); // the neighbour in the same host page was not touched
+    }
+    // GetProcessInfo(self, 20) reports physical - virtual of the linear heap; other types read as 0.
+    {
+        Env e;
+        Prog p;
+        p.a.ldrc(1, kCurrentProcess);
+        p.a.mov(2, 20);
+        p.a.svc(0x2B); // r1:r2 = value
+        p.a.movr(8, 2);
+        p.a.movr(0, 1);
+        p.storeR0(kRes);
+        p.a.movr(0, 8);
+        p.storeR0(kHandleA);
+        p.a.ldrc(1, kCurrentProcess);
+        p.a.mov(2, 3);
+        p.a.svc(0x2B);
+        p.a.movr(0, 1);
+        p.storeR0(kHandleB);
+        p.a.bx(14);
+        CHECK(runProg(e, p) == RunResult::AllExited);
+        CHECK(e.rd(kRes) == 0x0C000000 && e.rd(kHandleA) == 0);
+        CHECK(e.rd(kHandleB) == 0);
+    }
     (void)g_env;
     std::printf(g_fail ? "FAIL\n" : "kernel_test ok\n");
     return g_fail ? 1 : 0;

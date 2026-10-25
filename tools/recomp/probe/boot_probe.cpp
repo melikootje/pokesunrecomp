@@ -14,7 +14,9 @@
 #include <string>
 #include <vector>
 
+#include "png.h"
 #include "pokerecomp/dispatcher.h"
+#include "pokerecomp/gpu.h"
 #include "pokerecomp/guest_memory.h"
 #include "pokerecomp/kernel.h"
 #include "pokerecomp/services.h"
@@ -122,11 +124,123 @@ int main(int argc, char **argv) {
     kernel.configure(KernelConfig{});
     registerDefaultServices(kernel);
     registerFsService(kernel, rom);
+    registerLdrService(kernel);
+    auto gpu = registerGspService(kernel);
+    auto input = std::make_shared<InputState>();
+    registerHidService(kernel, input);
     kernel.createMainThread(kText, kStackTop, 0);
     std::printf("registered %zu blocks; policy for unimplemented IPC: %s\n", disp.blockCount(),
                 lenient ? "success" : "error");
 
-    const RunResult rr = kernel.run(maxInsns);
+    // PROBE_PRESS=<period>:<hold>:<hexKeyMask> holds the pad keys for `hold` of every `period` guest
+    // instructions (run in 5M-instruction slices so the host can change the input between them).
+    uint64_t pressPeriod = 0, pressHold = 0;
+    uint32_t pressMask = 0;
+    if (const char *ps = std::getenv("PROBE_PRESS"))
+        std::sscanf(ps, "%" SCNu64 ":%" SCNu64 ":%x", &pressPeriod, &pressHold, &pressMask);
+    // PROBE_PROTECT=<hexAddr>:<hexSize>:<afterInsns> makes a guest range inaccessible once `afterInsns` have
+    // run, so the first access faults and the report names the code that touches it.
+    uint32_t protAddr = 0, protSize = 0;
+    uint64_t protAfter = 0;
+    if (const char *pp = std::getenv("PROBE_PROTECT"))
+        std::sscanf(pp, "%x:%x:%" SCNu64, &protAddr, &protSize, &protAfter);
+    // PROBE_TOUCH=<period>:<hold>:<x>,<y>[;<x>,<y>...] touches the bottom screen for `hold` of every `period`
+    // instructions, moving to the next point each period.
+    uint64_t touchPeriod = 0, touchHold = 0;
+    std::vector<std::pair<unsigned, unsigned>> touchPts;
+    if (const char *tp = std::getenv("PROBE_TOUCH")) {
+        int used = 0;
+        std::sscanf(tp, "%" SCNu64 ":%" SCNu64 ":%n", &touchPeriod, &touchHold, &used);
+        for (const char *c = tp + used; *c;) {
+            unsigned x = 0, y = 0;
+            int n = 0;
+            if (std::sscanf(c, "%u,%u%n", &x, &y, &n) < 2)
+                break;
+            touchPts.push_back({x, y});
+            c += n;
+            if (*c == ';')
+                c++;
+        }
+    }
+    // PROBE_SHOT=<dir>:<everyInsns> writes top/bottom screen PNGs (and always one at the end).
+    std::string shotDir;
+    uint64_t shotEvery = 0, shotIndex = 0;
+    if (const char *sp = std::getenv("PROBE_SHOT")) {
+        const std::string spec = sp;
+        const size_t c = spec.find(':');
+        shotDir = spec.substr(0, c);
+        if (c != std::string::npos)
+            shotEvery = std::strtoull(spec.c_str() + c + 1, nullptr, 10);
+    }
+    auto shot = [&](uint64_t at) {
+        if (shotDir.empty())
+            return;
+        for (int sc = 0; sc < 2; sc++) {
+            Image img;
+            if (gpu->capture(sc, &img)) {
+                char name[256];
+                std::snprintf(name, sizeof name, "%s/%s_%04" PRIu64 "_%" PRIu64 "M.png", shotDir.c_str(),
+                              sc == kTopScreen ? "top" : "bottom", shotIndex, at / 1000000);
+                probe::writePng(name, img.width, img.height, img.rgba);
+            }
+        }
+        shotIndex++;
+    };
+    if (const char *dl = std::getenv("PROBE_DRAWLOG")) { // log the first N draw calls
+        static unsigned remaining;
+        remaining = unsigned(std::strtoul(dl, nullptr, 10));
+        gpu->pica().setDrawLog(
+            [](void *, const std::string &s) {
+                if (remaining) {
+                    remaining--;
+                    std::printf("[pica] %s\n", s.c_str());
+                }
+            },
+            nullptr);
+    }
+    RunResult rr = RunResult::InstructionLimit;
+    if (protSize && protAfter) {
+        rr = kernel.run(protAfter);
+        gm.protect(protAddr, protSize, GuestMemory::None);
+    }
+    for (uint64_t done = 0; done < maxInsns && rr == RunResult::InstructionLimit;) {
+        const uint64_t n =
+            (pressPeriod || touchPeriod) ? std::min<uint64_t>(5000000, maxInsns - done) : maxInsns;
+        input->keys = pressPeriod && (done % pressPeriod) < pressHold ? pressMask : 0;
+        if (touchPeriod && !touchPts.empty()) {
+            const auto &pt = touchPts[(done / touchPeriod) % touchPts.size()];
+            input->touching = (done % touchPeriod) < touchHold;
+            input->touchX = uint16_t(pt.first);
+            input->touchY = uint16_t(pt.second);
+        }
+        rr = kernel.run(n);
+        done += n;
+        if (shotEvery && (done / n) % std::max<uint64_t>(1, shotEvery / n) == 0)
+            shot(done);
+        if (rr != RunResult::InstructionLimit)
+            break;
+    }
+    shot(maxInsns);
+    {
+        const GxStats &g = gpu->stats();
+        std::printf("gx: fills=%" PRIu64 " transfers=%" PRIu64 " copies=%" PRIu64 " dmas=%" PRIu64
+                    " rejected=%" PRIu64 "\n",
+                    g.fills, g.transfers, g.copies, g.dmas, g.rejected);
+    }
+    {
+        const pica::PicaStats &p = gpu->pica().stats();
+        std::printf("pica: lists=%" PRIu64 " regwrites=%" PRIu64 " draws=%" PRIu64 " skipped=%" PRIu64
+                    " tris=%" PRIu64 " culled=%" PRIu64 " clipped=%" PRIu64 " fragments=%" PRIu64
+                    " vsRuns=%" PRIu64 " vsFail=%" PRIu64 " badAddr=%" PRIu64 "\n",
+                    p.commandLists, p.regWrites, p.draws, p.drawsSkipped, p.triangles, p.culled, p.clipped,
+                    p.fragments, p.shaderRuns, p.shaderFailures, p.badAddress);
+        std::printf("pica unsupported: lighting=%" PRIu64 " procTex=%" PRIu64 " fog=%" PRIu64
+                    " shadow=%" PRIu64 " geoShader=%" PRIu64 " texFmt=%" PRIu64 " cube=%" PRIu64
+                    " immediate=%" PRIu64 " logicOp=%" PRIu64 "\n",
+                    p.unsupportedLighting, p.unsupportedProcTex, p.unsupportedFog, p.unsupportedShadow,
+                    p.unsupportedGeometryShader, p.unsupportedTexFormat, p.unsupportedCube,
+                    p.unsupportedImmediate, p.unsupportedLogicOp);
+    }
     static const char *names[] = {
         "all threads exited", "deadlock", "instruction limit", "process exit", "break", "trap", "fault"};
     std::printf("result: %s\n", names[int(rr)]);
@@ -139,12 +253,44 @@ int main(int argc, char **argv) {
     if (rr == RunResult::Break)
         std::printf("  svcBreak reason %u\n", kernel.breakReason());
 
+    if (const char *w = std::getenv("PROBE_WORDS")) { // comma-separated guest addresses (hex) to print
+        std::string list = w;
+        size_t pos = 0;
+        while (pos < list.size()) {
+            const size_t e = list.find(',', pos);
+            const uint32_t a = uint32_t(std::strtoul(list.substr(pos, e - pos).c_str(), nullptr, 16));
+            uint32_t v = 0;
+            std::memcpy(&v, gm.base() + a, 4);
+            std::printf("word %08x = %08x\n", a, v);
+            if (e == std::string::npos)
+                break;
+            pos = e + 1;
+        }
+    }
+    if (const char *tp = std::getenv("PROBE_TRACE")) { // full deterministic kernel trace to a file
+        std::ofstream t(tp);
+        for (const auto &l : kernel.trace())
+            t << l << "\n";
+    }
     for (const auto &d : kernel.describeThreads())
         std::printf("  %s\n", d.c_str());
-    for (uint32_t id = 1; id <= 4; id++)
-        if (const RcCtx *c = kernel.threadContext(id))
-            std::printf("thread %u: pc=%08x lr=%08x sp=%08x r0=%08x r1=%08x r2=%08x r3=%08x\n", id, c->r[15],
-                        c->r[14], c->r[13], c->r[0], c->r[1], c->r[2], c->r[3]);
+    for (uint32_t id = 1; id <= 16; id++)
+        if (const RcCtx *c = kernel.threadContext(id)) {
+            std::printf("thread %u: pc=%08x", id, c->r[15]);
+            for (int k = 0; k < 15; k++)
+                std::printf(" r%d=%08x", k, c->r[k]);
+            std::printf("\n");
+            if (id == 1) { // stack words that look like code addresses (return-address candidates)
+                std::printf("  T1 stack code refs:");
+                for (uint32_t a = c->r[13]; a < c->r[13] + 0x400 && a < kStackTop; a += 4) {
+                    uint32_t v;
+                    std::memcpy(&v, gm.base() + a, 4);
+                    if (v >= kText && v < 0x006D0000)
+                        std::printf(" %08x", v);
+                }
+                std::printf("\n");
+            }
+        }
     {
         const auto &tr = kernel.trace();
         std::printf("last trace lines:\n");

@@ -19,3 +19,7 @@ if(RECOMP_GENERATED_DIR)
   target_link_libraries(boot_probe PRIVATE pokerecomp_runtime romlib)
   target_compile_options(boot_probe PRIVATE -w)
 endif()
+
+# Local-only: loads every CRO of a user-supplied dump through the ldr:ro loader and audits the relocations.
+add_executable(ro_check probe/ro_check.cpp)
+target_link_libraries(ro_check PRIVATE pokerecomp_runtime romlib)

@@ -109,7 +109,16 @@ class Kernel {
 
     // For services and tests
     GuestMemory &memory() { return gm_; }
+    Dispatcher &dispatcher() { return disp_; }
+    void log(const std::string &s) const {
+        if (log_)
+            log_(s);
+    }
     Handle createEvent(bool sticky);
+    // Shared memory block owned by a service; the process maps it with MapMemoryBlock. Returns 0 for the
+    // address until mapped.
+    Handle createMemoryBlock(uint32_t size);
+    uint32_t memoryBlockAddress(Handle h) const;
     Handle createMutex(bool locked);
     // Creates a session handle backed by a kernel-owned service object (e.g. an open file).
     Handle createSession(std::unique_ptr<Service> svc);
@@ -123,6 +132,8 @@ class Kernel {
     void signalEvent(Handle h);
     // Signals `h` after `delayNs` of virtual time (models system services that notify asynchronously).
     void scheduleSignal(Handle h, uint64_t delayNs, uint64_t periodNs = 0);
+    // Runs `cb` on the scheduler after `delayNs` of virtual time (periodically when periodNs > 0).
+    void scheduleCallback(uint64_t delayNs, uint64_t periodNs, std::function<void()> cb);
     uint32_t currentThreadId() const;
     // One line per live thread describing its state and what it waits for (deadlock diagnostics).
     std::vector<std::string> describeThreads() const;

@@ -23,3 +23,7 @@ build-probe/tools/recomp/boot_probe out/exefs/code.bin
 ```
 `boot_probe` uses a throwaway fake kernel that is only good enough to watch start-up; the real HLE kernel and
 services are issues #9 and #10.
+
+## Other local tools
+- `PROBE_TRACE=trace.txt boot_probe ...` writes the full kernel/IPC trace to a file.
+- `build/tools/recomp/ro_check <dump.cci> [-v]` loads every CRO of your dump and audits relocations (docs/ldr-ro.md).

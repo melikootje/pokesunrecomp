@@ -109,6 +109,26 @@ class CfgService : public Service {
             r.reply(2, 0, kresult::Success);
             r.cmd[2] = o_.region;
             break;
+        case 0x00030040: { // GenHashConsoleUnique(appIdSalt) -> 64-bit value (deterministic, not a real
+                           // console)
+            uint64_t x = uint64_t(r.cmd[1]) * 0x9E3779B97F4A7C15ull + 0x243F6A8885A308D3ull;
+            x ^= x >> 29;
+            x *= 0xBF58476D1CE4E5B9ull;
+            x ^= x >> 32;
+            r.reply(3, 0, kresult::Success);
+            r.cmd[2] = uint32_t(x);
+            r.cmd[3] = uint32_t(x >> 32);
+            break;
+        }
+        case 0x00040000: // GetRegionCanadaUSA -> 0 (not the Canada/USA special case)
+        case 0x00050000: // GetSystemModel -> 0 (Old 3DS)
+            r.reply(2, 0, kresult::Success);
+            r.cmd[2] = 0;
+            break;
+        case 0x00060000: // GetModelNintendo2DS -> 1 (not a 2DS)
+            r.reply(2, 0, kresult::Success);
+            r.cmd[2] = 1;
+            break;
         default:
             r.reply(1, 0, kresult::InvalidCommand);
             std::fprintf(stderr, "[%s] unimplemented command %08x\n", name_, r.header());
@@ -316,6 +336,28 @@ class ErrService : public Service {
     bool log_;
 };
 
+// Peripheral/online services that are not implemented yet: every command answers with `result`, and each
+// distinct command is logged once so real needs can be found and implemented properly.
+class LoggedStubService : public Service {
+  public:
+    LoggedStubService(const char *name, uint32_t result) : name_(name), result_(result) {}
+    const char *name() const override { return name_; }
+    void handle(IpcRequest &r) override {
+        if (seen_.insert(r.header()).second) {
+            std::fprintf(stderr, "[%s] stub command %08x:", name_, r.header());
+            for (unsigned i = 1; i <= r.normalParams() + r.translateParams() && i < 10; i++)
+                std::fprintf(stderr, " %08x", r.cmd[i]);
+            std::fprintf(stderr, "\n");
+        }
+        r.reply(1, 0, result_);
+    }
+
+  private:
+    const char *name_;
+    uint32_t result_;
+    std::set<uint32_t> seen_;
+};
+
 } // namespace
 
 void registerDefaultServices(Kernel &k, const ServiceOptions &opt) {
@@ -328,6 +370,11 @@ void registerDefaultServices(Kernel &k, const ServiceOptions &opt) {
     k.registerService(std::make_unique<SuccessService>("ndm:u", k));
     k.registerService(std::make_unique<DspService>(k));
     k.registerService(std::make_unique<ErrService>(k, opt.logFatalErrors));
+    // Online/peripheral services: stubbed (success) until each is implemented for real.
+    for (const char *n : {"ac:u",     "act:u",    "am:app", "boss:U",  "cam:u", "cecd:u", "dlp:FKCL",
+                          "dlp:SRVR", "frd:u",    "http:C", "ir:USER", "mic:u", "news:u", "nfc:u",
+                          "nim:aoc",  "nwm::UDS", "qtm:u",  "soc:U",   "ssl:C", "y2r:u"})
+        k.registerService(std::make_unique<LoggedStubService>(n, kresult::Success));
 }
 
 } // namespace pokerecomp

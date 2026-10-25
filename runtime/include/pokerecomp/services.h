@@ -8,6 +8,17 @@
 
 namespace pokerecomp {
 
+class Gpu;
+
+// Host-updated controller state published through hid:USER shared memory.
+struct InputState {
+    uint32_t keys = 0; // 3DS HID key bits (A=1, B=2, Select=4, Start=8, ...)
+    int16_t circleX = 0, circleY = 0;
+    // Bottom-screen touch in pixels (0..319, 0..239); `touching` false means no contact.
+    bool touching = false;
+    uint16_t touchX = 0, touchY = 0;
+};
+
 struct ServiceOptions {
     uint32_t language = 1; // cfg: system language (1 = English)
     uint32_t region = 1;   // cfg: secure-info region (1 = USA)
@@ -16,6 +27,17 @@ struct ServiceOptions {
 
 // Registers apt, cfg, ptm, ndm and err:f (and further services as they are added).
 void registerDefaultServices(Kernel &kernel, const ServiceOptions &opt = {});
+
+// ldr:ro (CRO/CRS loader).
+void registerLdrService(Kernel &kernel);
+
+// gsp::Gpu (shared-memory queues, VBlank, GX commands). Maps VRAM and returns the GPU the service drives, so
+// the host can capture the screens.
+std::shared_ptr<Gpu> registerGspService(Kernel &kernel);
+
+// hid:USER (pad ring buffer in shared memory; the host mutates `input` between kernel runs or from a
+// callback).
+void registerHidService(Kernel &kernel, std::shared_ptr<InputState> input);
 
 } // namespace pokerecomp
 

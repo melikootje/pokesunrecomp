@@ -121,6 +121,8 @@ class FsService : public Service {
                 r.reply(1, 0, 0xC8804464u);
                 break;
             }
+            std::fprintf(stderr, "[fs:USER] OpenFile '%s' size %llu\n", path.c_str(),
+                         (unsigned long long)fsz);
             const Handle h = k_.createSession(std::make_unique<RomFile>(k_, b_, path));
             r.reply(1, 2, kresult::Success);
             r.cmd[2] = 0x10; // move handle
@@ -151,6 +153,11 @@ class FsService : public Service {
             r.reply(1, 0, kresult::Success);
             break;
         case 0x08630000: // GetPriority -> 0
+            r.reply(2, 0, kresult::Success);
+            r.cmd[2] = 0;
+            break;
+        case 0x084500C2: // identity not confirmed (3 words 4,1,1 + 1-byte static input); answer success,
+                         // false
             r.reply(2, 0, kresult::Success);
             r.cmd[2] = 0;
             break;

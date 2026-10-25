@@ -28,3 +28,4 @@ cmake-build-*/
 # Analysis metadata is committed; raw Ghidra projects/exports are not
 ghproj/
 *.tsv
+.cache/

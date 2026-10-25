@@ -62,6 +62,31 @@ int main() {
     for (int i = 0; i < 1000; i++)
         CHECK(m.runGuarded([&] { sink = m.base()[a]; }, &f));
     (void)sink;
+    // alias(): two guest addresses share pages; unmapping the alias leaves the source intact.
+    {
+        const uint32_t src = 0x08000000 + 2 * page, dst = 0x006D4000 + 2 * page; // same delta the SDK uses
+        CHECK(m.map(src, 2 * page, GuestMemory::Read | GuestMemory::Write));
+        uint32_t pat = 0x11223344;
+        std::memcpy(m.base() + src + 4, &pat, 4);
+        CHECK(m.alias(dst, src, 2 * page));
+        std::memcpy(&r, m.base() + dst + 4, 4);
+        CHECK(r == pat);  // existing contents visible through the alias
+        pat = 0x55667788; // write through the alias, read through the source
+        std::memcpy(m.base() + dst + page + 8, &pat, 4);
+        std::memcpy(&r, m.base() + src + page + 8, 4);
+        CHECK(r == pat);
+        pat = 0x99AABBCC; // and the other way round
+        std::memcpy(m.base() + src + 12, &pat, 4);
+        std::memcpy(&r, m.base() + dst + 12, 4);
+        CHECK(r == pat);
+        CHECK(!m.alias(dst + 1, src, page)); // delta not a host-page multiple
+        CHECK(!m.alias(src, src, page));     // same range
+        CHECK(m.unmap(dst, 2 * page));
+        ok = m.runGuarded([&] { sink = m.base()[dst + 4]; }, &f);
+        CHECK(!ok && f.address == dst + 4); // alias gone
+        std::memcpy(&r, m.base() + src + 12, 4);
+        CHECK(r == 0x99AABBCC); // source untouched
+    }
     std::printf(g_fail ? "FAIL\n" : "guest_memory ok\n");
     return g_fail ? 1 : 0;
 }

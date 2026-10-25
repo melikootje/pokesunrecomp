@@ -32,6 +32,13 @@ class GuestMemory {
     bool protect(uint32_t addr, uint32_t size, int prot);
     bool unmap(uint32_t addr, uint32_t size);
 
+    // Makes [dst, dst + size) a second view of the pages backing [src, src + size): a write through either
+    // address is visible through the other (what Horizon's MapProcessMemory-style mappings give guest code).
+    // `src` must already be committed. The ranges are widened to host pages; dst - src must be a multiple
+    // of the host page size, otherwise this returns false. Any previous mapping at dst is replaced. The
+    // views stay coherent until one of them is unmapped (unmap(dst) removes only the alias).
+    bool alias(uint32_t dst, uint32_t src, uint32_t size);
+
     // Runs fn(); if it faults on a guest address inside the reservation, returns false and fills `fault`.
     // A fault anywhere else is re-raised with the default action (crash).
     bool runGuarded(const std::function<void()> &fn, GuestFault *fault);

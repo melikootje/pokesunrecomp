@@ -6,6 +6,11 @@ Static recompilation tooling and HLE runtime for running a user-owned copy of **
 **No game data is included or ever will be.** You supply your own decrypted dump. Read
 [docs/legal-policy.md](docs/legal-policy.md) first.
 
+## Status
+The recompiled game boots, loads its static modules and runs the language-select scene; the 3D pipeline is a
+software reference renderer under development. Measured status and evidence: [docs/boot-status.md](docs/boot-status.md),
+[docs/ldr-ro.md](docs/ldr-ro.md), [docs/gpu.md](docs/gpu.md).
+
 ## Scope
 - Host tooling (`tools/`): ROM container parsing/extraction, analysis, recompiler.
 - Runtime (`runtime/`): HLE kernel/services, GPU, audio.

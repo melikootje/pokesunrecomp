@@ -138,6 +138,7 @@ struct Kernel::Impl {
         uint64_t fire;
         Handle handle;
         uint64_t period;
+        std::function<void()> cb;
     };
     std::vector<Delayed> delayedSignals;
 
@@ -296,6 +297,10 @@ struct Kernel::Impl {
     void processTimers() {
         for (size_t i = 0; i < delayedSignals.size();) {
             if (delayedSignals[i].fire <= k.now_) {
+                if (delayedSignals[i].cb) {
+                    auto cb = delayedSignals[i].cb; // the callback may schedule more work
+                    cb();
+                }
                 auto o = get(delayedSignals[i].handle);
                 if (o && o->type == T::Event)
                     static_cast<Event &>(*o).signaled = true;
@@ -367,9 +372,45 @@ struct Kernel::Impl {
     }
 
     // ------------------------------------------------------------------ memory
-    static uint32_t pageUp(uint32_t v) {
-        const uint32_t pg = uint32_t(GuestMemory::hostPageSize());
-        return (v + pg - 1) & ~(pg - 1);
+    // The guest allocates in 4 KiB pages. The host may use bigger ones (16 KiB on Apple silicon), so all
+    // bookkeeping here is per guest page and only mapping/unmapping widens to whole host pages.
+    static constexpr uint32_t kGuestPage = 0x1000;
+    static uint32_t pageUp(uint32_t v) { return (v + kGuestPage - 1) & ~(kGuestPage - 1); }
+    bool mapGuest(uint32_t addr, uint32_t size) {
+        const uint64_t hp = GuestMemory::hostPageSize();
+        const uint64_t lo = addr & ~(hp - 1),
+                       hi = std::min<uint64_t>((uint64_t(addr) + size + hp - 1) & ~(hp - 1), 1ull << 32);
+        return k.gm_.map(uint32_t(lo), uint32_t(hi - lo), GuestMemory::Read | GuestMemory::Write);
+    }
+    // Gives back [addr, addr + size) (already removed from `allocs`): the bytes read as zero again
+    // afterwards. Host pages that still back another allocation stay mapped and are only cleared.
+    void releaseGuest(uint32_t addr, uint32_t size) {
+        const uint64_t hp = GuestMemory::hostPageSize(), end = uint64_t(addr) + size;
+        const uint64_t lo = addr & ~(hp - 1), hi = std::min<uint64_t>((end + hp - 1) & ~(hp - 1), 1ull << 32);
+        uint64_t runStart = 0, runLen = 0;
+        auto flush = [&] {
+            if (runLen)
+                k.gm_.unmap(uint32_t(runStart), uint32_t(runLen));
+            runLen = 0;
+        };
+        for (uint64_t p = lo; p < hi; p += hp) {
+            auto it = allocs.lower_bound(uint32_t(std::min<uint64_t>(p + hp, 0xFFFFFFFFull)));
+            bool used = false;
+            if (it != allocs.begin()) {
+                --it;
+                used = uint64_t(it->first) + it->second > p && it->first < p + hp;
+            }
+            if (used) {
+                flush();
+                const uint64_t a = std::max<uint64_t>(p, addr), b = std::min<uint64_t>(p + hp, end);
+                std::memset(k.gm_.base() + a, 0, size_t(b - a));
+            } else {
+                if (!runLen)
+                    runStart = p;
+                runLen += hp;
+            }
+        }
+        flush();
     }
     bool overlaps(uint32_t a, uint32_t size) {
         for (auto &kv : allocs)
@@ -401,10 +442,10 @@ struct Kernel::Impl {
         if (addr == 0)
             addr = findFree(linear ? kLinearBase : kHeapBase, linear ? kLinearEnd : kHeapEnd, size);
         else
-            addr &= ~(uint32_t(GuestMemory::hostPageSize()) - 1);
+            addr &= ~(kGuestPage - 1);
         if (addr == 0 || overlaps(addr, size))
             return kresult::InvalidAddress;
-        if (!k.gm_.map(addr, size, GuestMemory::Read | GuestMemory::Write))
+        if (!mapGuest(addr, size))
             return kresult::OutOfMemory;
         allocs[addr] = size;
         *out = addr;
@@ -602,6 +643,20 @@ Handle Kernel::createEvent(bool sticky) {
     return impl_->add(e);
 }
 
+Handle Kernel::createMemoryBlock(uint32_t size) {
+    auto b = std::make_shared<MemBlock>();
+    b->size = Kernel::Impl::pageUp(size);
+    return impl_->add(b);
+}
+
+uint32_t Kernel::memoryBlockAddress(Handle h) const {
+    auto o = impl_->get(h);
+    if (!o || o->type != T::MemBlock)
+        return 0;
+    const auto &b = static_cast<const MemBlock &>(*o);
+    return b.mapped ? b.addr : 0;
+}
+
 Handle Kernel::createSession(std::unique_ptr<Service> svc) {
     Service *raw = svc.get();
     impl_->owned.push_back(std::move(svc));
@@ -628,7 +683,11 @@ void Kernel::stopWithReason(uint32_t reason, const std::string &message) {
 }
 
 void Kernel::scheduleSignal(Handle h, uint64_t delayNs, uint64_t periodNs) {
-    impl_->delayedSignals.push_back({now_ + nsToTicks(delayNs), h, nsToTicks(periodNs)});
+    impl_->delayedSignals.push_back({now_ + nsToTicks(delayNs), h, nsToTicks(periodNs), nullptr});
+}
+
+void Kernel::scheduleCallback(uint64_t delayNs, uint64_t periodNs, std::function<void()> cb) {
+    impl_->delayedSignals.push_back({now_ + nsToTicks(delayNs), 0, nsToTicks(periodNs), std::move(cb)});
 }
 
 void Kernel::signalEvent(Handle h) {
@@ -723,10 +782,11 @@ bool Kernel::Impl::handleSvc(Thread *t) {
             res = I.commit(r[1], r[3], linear, &out);
         } else if (op == 1) {
             const uint32_t size = Kernel::Impl::pageUp(r[3]);
-            auto it = I.allocs.find(r[1] & ~(uint32_t(GuestMemory::hostPageSize()) - 1));
+            auto it = I.allocs.find(r[1] & ~(Kernel::Impl::kGuestPage - 1));
             if (it != I.allocs.end()) {
-                K.gm_.unmap(it->first, it->second);
+                const uint32_t a = it->first, n = it->second;
                 I.allocs.erase(it);
+                I.releaseGuest(a, n);
             } else {
                 (void)size;
                 res = kresult::InvalidAddress;
@@ -936,10 +996,22 @@ bool Kernel::Impl::handleSvc(Thread *t) {
         }
         uint32_t out;
         const uint32_t res = I.commit(r[1], b.size, false, &out);
-        if (res != kresult::Success)
+        if (res != kresult::Success) {
+            if (K.log_) {
+                char lb[96];
+                std::snprintf(lb, sizeof lb, "MapMemoryBlock handle %08x at %08x size %x failed: %08x", r[0],
+                              r[1], b.size, res);
+                K.log_(lb);
+            }
             return fail(res);
+        }
         b.addr = out;
         b.mapped = true;
+        if (K.log_) {
+            char lb[80];
+            std::snprintf(lb, sizeof lb, "MapMemoryBlock handle %08x -> %08x size %x", r[0], out, b.size);
+            K.log_(lb);
+        }
         r[0] = kresult::Success;
         return true;
     }
@@ -950,8 +1022,9 @@ bool Kernel::Impl::handleSvc(Thread *t) {
         auto &b = static_cast<MemBlock &>(*o);
         auto it = I.allocs.find(b.addr);
         if (it != I.allocs.end()) {
-            K.gm_.unmap(it->first, it->second);
+            const uint32_t a = it->first, n = it->second;
             I.allocs.erase(it);
+            I.releaseGuest(a, n);
         }
         b.mapped = false;
         r[0] = kresult::Success;
@@ -1084,9 +1157,12 @@ bool Kernel::Impl::handleSvc(Thread *t) {
         r[1] = 0;
         r[2] = 0;
         return true;
-    case 0x2B: // GetProcessInfo(process r1, type r2) -> r1:r2
+    case 0x2B: // GetProcessInfo(process r1, type r2) -> r1:r2 (64-bit value)
         r[0] = kresult::Success;
-        r[1] = 0;
+        // Type 20: physical address minus virtual address of the linear heap (0x14000000 -> 0x20000000). The
+        // SDK adds it to a linear virtual address to build the physical addresses it writes into GPU command
+        // lists (read from the guest conversion at 0x172be4, which returns [0x69ca4c] + vaddr).
+        r[1] = r[2] == 20 ? 0x0C000000u : 0;
         r[2] = 0;
         return true;
     case 0x2D: { // ConnectToPort(name* r1) -> r1 session
