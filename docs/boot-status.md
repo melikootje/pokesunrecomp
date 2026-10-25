@@ -11,11 +11,13 @@ observed in the kernel/IPC trace, not inferred.
 | `hid:USER` shared memory | mapped and polled by the game (see below) |
 | `ldr:ro`: CRS + `LangSelect.cro` | reached, loaded and relocated (docs/ldr-ro.md) |
 | Language-selection scene / first frames | running; **both screens render** (software renderer, docs/gpu.md) |
-| What the game shows | its **save-data error screen** ("The saved game data is corrupted. Please go to the HOME Menu…"): the FS HLE provides no save archive |
-| Anything past language selection (title, new game, overworld) | **not reached** |
+| First-boot data | `GetFormatInfo` → `FormatSaveData` → `CreateExtSaveData` flow completes (docs/save-data.md) |
+| **Language-selection screen** | **reached and rendered**: "Play the game in" English / Español / Français / Deutsch over the Alola sea backdrop; bottom screen shows the instructions (`PROBE_SHOT`) |
+| Anything past language selection (intro, new game, overworld) | **not yet tried**: input is scripted (`PROBE_PRESS`) but the next steps have not been run |
 
-The game can now be observed (`PROBE_SHOT`). It stops at the save-corrupted screen, so the next milestone is the
-save-data archive (`fs:USER` OpenArchive for save data / extdata, plus `fs:File` writes).
+The game is observed with `PROBE_SHOT`. It used to stop at a *save data is corrupted* screen: the FS HLE answered
+`GetFormatInfo` wrongly and had no writable archives. With the save-data archive in place it runs the genuine first-boot
+sequence and stops, waiting for input, at the language selection.
 
 ## Bugs found by this work (all fixed, with tests)
 - **16 KiB host pages vs 4 KiB guest pages.** The kernel rounded every allocation to the *host* page, so the game's
@@ -26,6 +28,9 @@ save-data archive (`fs:USER` OpenArchive for save data / extdata, plus `fs:File`
   `index % 8` at `+0x28 + 16·i` (held, pressed, released, circle pad as two halfwords).
 - **Linear-heap physical addresses.** `svcGetProcessInfo` type 20 returned 0, so every GPU address the game wrote was
   virtual; it must return `0x0C000000` (docs/gpu.md).
+- **fs:USER** answered `GetFormatInfo` with a single zero (it returns size, directories, files and a flag) and had no
+  save archive; the game concluded its save was corrupted (docs/save-data.md). `OpenLinkFile` was missing and ended the
+  run in `svcBreak`. Services now run under the fault guard so a bad guest pointer cannot crash the host.
 - **`ldr:ro`** answered success for everything without mapping anything (docs/ldr-ro.md).
 
 ## HID shared memory (evidence from the game's own readers)

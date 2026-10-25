@@ -19,6 +19,7 @@
 #include "pokerecomp/gpu.h"
 #include "pokerecomp/guest_memory.h"
 #include "pokerecomp/kernel.h"
+#include "pokerecomp/save_store.h"
 #include "pokerecomp/services.h"
 #include "romlib/dump.h"
 
@@ -123,7 +124,11 @@ int main(int argc, char **argv) {
     kernel.setLog([](const std::string &s) { std::printf("[kernel] %s\n", s.c_str()); });
     kernel.configure(KernelConfig{});
     registerDefaultServices(kernel);
-    registerFsService(kernel, rom);
+    // Writable archives (save data, extdata, SD card) live in PROBE_SAVEDIR (default ./savedata, never
+    // committed).
+    auto saves =
+        std::make_shared<SaveStore>(std::getenv("PROBE_SAVEDIR") ? std::getenv("PROBE_SAVEDIR") : "savedata");
+    registerFsService(kernel, rom, saves);
     registerLdrService(kernel);
     auto gpu = registerGspService(kernel);
     auto input = std::make_shared<InputState>();

@@ -1,6 +1,6 @@
 add_library(pokerecomp_runtime STATIC
   src/runtime.cpp src/guest_memory.cpp src/vfp.c
-  src/decode.cpp src/interp.cpp src/dispatcher.cpp src/ro_loader.cpp src/gpu.cpp src/pica_shader.cpp src/pica.cpp src/pica_tex.cpp src/pica_raster.cpp src/kernel.cpp src/services.cpp src/fs_service.cpp src/ldr_service.cpp src/gsp_service.cpp src/hid_service.cpp)
+  src/decode.cpp src/interp.cpp src/dispatcher.cpp src/ro_loader.cpp src/gpu.cpp src/save_store.cpp src/pica_shader.cpp src/pica.cpp src/pica_tex.cpp src/pica_raster.cpp src/kernel.cpp src/services.cpp src/fs_service.cpp src/ldr_service.cpp src/gsp_service.cpp src/hid_service.cpp)
 target_include_directories(pokerecomp_runtime PUBLIC include)
 if(POKE_BUILD_TESTS AND NOT ANDROID)
   add_executable(guest_memory_test tests/guest_memory_test.cpp)
@@ -21,4 +21,10 @@ if(POKE_BUILD_TESTS AND NOT ANDROID)
   add_executable(pica_test tests/pica_test.cpp)
   target_link_libraries(pica_test PRIVATE pokerecomp_runtime)
   add_test(NAME pica COMMAND pica_test)
+  add_executable(save_store_test tests/save_store_test.cpp)
+  target_link_libraries(save_store_test PRIVATE pokerecomp_runtime)
+  add_test(NAME save_store COMMAND save_store_test)
+  add_executable(fs_service_test tests/fs_service_test.cpp)
+  target_link_libraries(fs_service_test PRIVATE pokerecomp_runtime)
+  add_test(NAME fs_service COMMAND fs_service_test)
 endif()

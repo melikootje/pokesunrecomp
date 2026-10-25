@@ -69,6 +69,13 @@ class FsBackend {
     }
 };
 
-void registerFsService(Kernel &kernel, std::shared_ptr<FsBackend> backend);
+class SaveStore;
+// `saves` (optional) provides writable archives: save data, extdata and the SD card. Without it only RomFS
+// exists.
+void registerFsService(Kernel &kernel, std::shared_ptr<FsBackend> backend,
+                       std::shared_ptr<SaveStore> saves = nullptr);
+// The same service without registering it (tests call it directly).
+std::unique_ptr<Service> makeFsService(Kernel &kernel, std::shared_ptr<FsBackend> backend,
+                                       std::shared_ptr<SaveStore> saves);
 
 } // namespace pokerecomp

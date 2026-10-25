@@ -657,6 +657,11 @@ uint32_t Kernel::memoryBlockAddress(Handle h) const {
     return b.mapped ? b.addr : 0;
 }
 
+Service *Kernel::sessionService(Handle h) {
+    auto o = impl_->get(h);
+    return o && o->type == T::Session ? static_cast<Session &>(*o).service : nullptr;
+}
+
 Handle Kernel::createSession(std::unique_ptr<Service> svc) {
     Service *raw = svc.get();
     impl_->owned.push_back(std::move(svc));
@@ -1184,7 +1189,16 @@ bool Kernel::Impl::handleSvc(Thread *t) {
         K.stats_.ipcRequests++;
         std::snprintf(tb, sizeof tb, "ipc %s %08x", ses.service->name(), req.header());
         I.trace(tb);
-        ses.service->handle(req);
+        // A service dereferences guest pointers from the request (static buffers, output buffers). A bad one
+        // must fail the request, not crash the host: run the handler under the fault guard.
+        GuestFault pf;
+        if (!K.gm_.runGuarded([&] { ses.service->handle(req); }, &pf)) {
+            std::snprintf(tb, sizeof tb, "service %s faulted on guest address %08x (command %08x)",
+                          ses.service->name(), pf.address, req.header());
+            if (K.log_)
+                K.log_(tb);
+            req.reply(1, 0, kresult::InvalidAddress);
+        }
         r[0] = kresult::Success;
         I.wakeAll();
         return true;

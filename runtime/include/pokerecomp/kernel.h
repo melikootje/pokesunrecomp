@@ -115,6 +115,9 @@ class Kernel {
             log_(s);
     }
     Handle createEvent(bool sticky);
+    // The service object behind a session handle (nullptr for anything else); lets tests drive sessions
+    // directly.
+    Service *sessionService(Handle h);
     // Shared memory block owned by a service; the process maps it with MapMemoryBlock. Returns 0 for the
     // address until mapped.
     Handle createMemoryBlock(uint32_t size);

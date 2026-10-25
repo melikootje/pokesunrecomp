@@ -25,8 +25,9 @@
 - `tools/romtool`: CLI over romlib.
 - `tools/tests`: unit tests and a CLI end-to-end test, built from synthetic fixtures only.
 - `tools/recomp`: A32 + Thumb decoder, reference interpreter, C emitter (explicit NZCV, flag-liveness elimination).
-- `runtime`: guest memory (4 GiB reservation, guarded faults, `alias()` second views), CRO loader + `ldr:ro` (docs/ldr-ro.md), VFPv2 soft-float (`vfp.c`), CPU context/ops headers
-  used by generated code. HLE kernel/services are still placeholders.
+- `runtime`: guest memory (4 GiB reservation, guarded faults, `alias()` second views), CRO loader + `ldr:ro` (docs/ldr-ro.md), a PICA200 software renderer (docs/gpu.md), host-backed save data (docs/save-data.md), VFPv2 soft-float (`vfp.c`), CPU context/ops headers
+  used by generated code; the HLE kernel and services (srv, apt, cfg, fs, gsp, hid, ldr, …) run the real game to its first
+  interactive screen, with stubs for the rest (docs/boot-status.md).
 - Testing approach and its limits: `docs/recompiler-testing.md`.
 
 This document is updated as each roadmap issue lands; sections marked "planned" are not implemented.

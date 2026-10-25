@@ -8,7 +8,7 @@ Static recompilation tooling and HLE runtime for running a user-owned copy of **
 
 ## Status
 The recompiled game boots, loads its static modules and renders its first screens through a software PICA200
-reference renderer; it currently stops at a save-data error screen (the FS HLE has no save archive yet). Measured status and evidence: [docs/boot-status.md](docs/boot-status.md),
+reference renderer; it runs the first-boot save/extdata creation and reaches the language-selection screen, fully rendered. Measured status and evidence: [docs/boot-status.md](docs/boot-status.md),
 [docs/ldr-ro.md](docs/ldr-ro.md), [docs/gpu.md](docs/gpu.md).
 
 ## Scope
