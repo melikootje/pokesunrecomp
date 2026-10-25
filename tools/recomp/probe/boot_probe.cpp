@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,7 @@ extern const unsigned rc_block_count;
 using namespace pokerecomp;
 
 namespace {
+uint64_t g_progress = 0; // guest instructions executed so far (for time-gated diagnostics)
 constexpr uint32_t kText = 0x00100000, kImageEnd = 0x006D5000;
 constexpr uint32_t kStackTop = 0x10000000,
                    kStackSize = 0x100000; // main thread stack (3DS: top of the app stack region)
@@ -137,6 +139,46 @@ int main(int argc, char **argv) {
     std::printf("registered %zu blocks; policy for unimplemented IPC: %s\n", disp.blockCount(),
                 lenient ? "success" : "error");
 
+    // PROBE_SCRIPT=<file>: timed input, one event per line (instruction counts; '#' starts a comment):
+    //   press <at> <duration> <hexKeyMask>
+    //   touch <at> <duration> <x> <y>
+    //   repeat <from> <to> <period> <duration> <hexKeyMask>     (a key held for <duration> of every <period>)
+    struct InputEvent {
+        uint64_t start, end;
+        uint32_t keys;
+        bool touch;
+        unsigned x, y;
+    };
+    std::vector<InputEvent> script;
+    if (const char *sf = std::getenv("PROBE_SCRIPT")) {
+        std::ifstream in(sf);
+        std::string line;
+        while (std::getline(in, line)) {
+            line = line.substr(0, line.find('#'));
+            std::istringstream ls(line);
+            std::string cmd;
+            if (!(ls >> cmd))
+                continue;
+            if (cmd == "press") {
+                uint64_t at, dur;
+                std::string mask;
+                if (ls >> at >> dur >> mask)
+                    script.push_back({at, at + dur, uint32_t(std::stoul(mask, nullptr, 16)), false, 0, 0});
+            } else if (cmd == "touch") {
+                uint64_t at, dur;
+                unsigned x, y;
+                if (ls >> at >> dur >> x >> y)
+                    script.push_back({at, at + dur, 0, true, x, y});
+            } else if (cmd == "repeat") {
+                uint64_t from, to, period, dur;
+                std::string mask;
+                if (ls >> from >> to >> period >> dur >> mask)
+                    for (uint64_t t = from; t < to; t += period)
+                        script.push_back({t, t + dur, uint32_t(std::stoul(mask, nullptr, 16)), false, 0, 0});
+            }
+        }
+        std::printf("input script: %zu events\n", script.size());
+    }
     // PROBE_PRESS=<period>:<hold>:<hexKeyMask> holds the pad keys for `hold` of every `period` guest
     // instructions (run in 5M-instruction slices so the host can change the input between them).
     uint64_t pressPeriod = 0, pressHold = 0;
@@ -259,6 +301,18 @@ int main(int argc, char **argv) {
             st.bboxMax[0] = st.bboxMax[1] = -1e30f;
         };
     }
+    if (const char *dsa = std::getenv("PROBE_DRAWSUM_AFTER")) { // PROBE_DRAWSUM_AFTER=<insns>:<count>
+        static uint64_t from = 0, num = 0, shown = 0;
+        std::sscanf(dsa, "%" SCNu64 ":%" SCNu64, &from, &num);
+        gpu->pica().setDrawLog(
+            [](void *, const std::string &s) {
+                if (g_progress >= from && shown < num) {
+                    std::printf("[sum#%" PRIu64 "] %s\n", shown, s.c_str());
+                    shown++;
+                }
+            },
+            nullptr);
+    }
     if (const char *ds =
             std::getenv("PROBE_DRAWSUM")) { // PROBE_DRAWSUM=<fromDraw>:<count>: full register summary
         static uint64_t from = 0, num = 0, seen = 0;
@@ -310,6 +364,48 @@ int main(int argc, char **argv) {
             seen++;
         });
     }
+    if (const char *rs =
+            std::getenv("PROBE_RT_SEQ")) { // PROBE_RT_SEQ=<dir>:<fromInsns>:<count>: RT after each draw
+        static std::string dir;
+        static uint64_t from = 0, num = 0, shown = 0;
+        static GuestMemory *gmp;
+        char dbuf[300] = {};
+        std::sscanf(rs, "%299[^:]:%" SCNu64 ":%" SCNu64, dbuf, &from, &num);
+        dir = dbuf;
+        gmp = &gm;
+        gpu->pica().addDrawEndHook([](uint32_t n, uint64_t frags, const float *mn, const float *mx) {
+            if (g_progress < from || shown >= num)
+                return;
+            std::vector<uint8_t> img(256 * 512 * 4);
+            for (unsigned y = 0; y < 512; y++)
+                for (unsigned x = 0; x < 256; x++) {
+                    const Rgba c =
+                        decodePixel(gmp->base() + kVramBase + tiledOffset(x, 511 - y, 256, 4), PixFmt::RGBA8);
+                    uint8_t *d = &img[(size_t(y) * 256 + x) * 4];
+                    d[0] = c.r;
+                    d[1] = c.g;
+                    d[2] = c.b;
+                    d[3] = 255;
+                }
+            char name[300];
+            std::snprintf(name, sizeof name, "%s/seq_%03llu.png", dir.c_str(), (unsigned long long)shown);
+            probe::writePng(name, 256, 512, img);
+            std::printf("[seq %03llu] n=%u frags=%llu bbox=(%g,%g)-(%g,%g)\n", (unsigned long long)shown, n,
+                        (unsigned long long)frags, mn[0], mn[1], mx[0], mx[1]);
+            shown++;
+        });
+    }
+    if (const char *da = std::getenv("PROBE_DRAWEND_AFTER")) { // PROBE_DRAWEND_AFTER=<insns>:<count>
+        static uint64_t from = 0, num = 0, shown = 0;
+        std::sscanf(da, "%" SCNu64 ":%" SCNu64, &from, &num);
+        gpu->pica().setDrawEndLog([](void *, uint32_t n, uint64_t frags, const float *mn, const float *mx) {
+            if (g_progress >= from && shown < num) {
+                shown++;
+                std::printf("[draw@%" PRIu64 "M] n=%u frags=%" PRIu64 " bbox=(%g,%g)-(%g,%g)\n",
+                            g_progress / 1000000, n, frags, mn[0], mn[1], mx[0], mx[1]);
+            }
+        });
+    }
     if (const char *dl = std::getenv("PROBE_DRAWEND")) { // PROBE_DRAWEND=<fromDraw>:<count>
         static uint64_t from = 0, num = 0, seen = 0;
         std::sscanf(dl, "%" SCNu64 ":%" SCNu64, &from, &num);
@@ -330,14 +426,23 @@ int main(int argc, char **argv) {
     uint64_t renderWindow = 0;
     if (const char *rw = std::getenv("PROBE_RENDER_WINDOW"))
         renderWindow = std::strtoull(rw, nullptr, 10);
+    // PROBE_PCSAMPLE=<fromInsns>: histogram of every thread's pc at each 1M-instruction slice (printed at the
+    // end).
+    uint64_t pcSampleFrom = 0;
+    std::map<std::pair<uint32_t, uint32_t>, uint64_t> pcHist;
+    if (const char *pc = std::getenv("PROBE_PCSAMPLE"))
+        pcSampleFrom = std::strtoull(pc, nullptr, 10);
     RunResult rr = RunResult::InstructionLimit;
     if (protSize && protAfter) {
         rr = kernel.run(protAfter);
         gm.protect(protAddr, protSize, GuestMemory::None);
     }
     for (uint64_t done = 0; done < maxInsns && rr == RunResult::InstructionLimit;) {
+        // Slices of 5M instructions let the host change input, rasterization and screenshots between them.
+        const bool sliced =
+            pressPeriod || touchPeriod || shotEvery || renderAfter || !script.empty() || pcSampleFrom;
         const uint64_t n =
-            (pressPeriod || touchPeriod) ? std::min<uint64_t>(5000000, maxInsns - done) : maxInsns;
+            sliced ? std::min<uint64_t>(pcSampleFrom ? 1000000 : 5000000, maxInsns - done) : maxInsns;
         gpu->pica().setRasterEnabled(done >= renderAfter && (!renderWindow || !shotEvery ||
                                                              done % shotEvery >= shotEvery - renderWindow));
         input->keys = pressPeriod && (done % pressPeriod) < pressHold ? pressMask : 0;
@@ -347,6 +452,23 @@ int main(int argc, char **argv) {
             input->touchX = uint16_t(pt.first);
             input->touchY = uint16_t(pt.second);
         }
+        if (!script.empty() && !touchPeriod)
+            input->touching = false;
+        for (const InputEvent &e : script)
+            if (done >= e.start && done < e.end) {
+                if (e.touch) {
+                    input->touching = true;
+                    input->touchX = uint16_t(e.x);
+                    input->touchY = uint16_t(e.y);
+                } else {
+                    input->keys |= e.keys;
+                }
+            }
+        g_progress = done;
+        if (pcSampleFrom && done >= pcSampleFrom)
+            for (uint32_t id = 1; id <= 16; id++)
+                if (const RcCtx *c = kernel.threadContext(id))
+                    pcHist[{id, c->r[15] | (c->thumb ? 1u : 0u)}]++;
         rr = kernel.run(n);
         done += n;
         if (shotEvery && (done / n) % std::max<uint64_t>(1, shotEvery / n) == 0)
@@ -407,6 +529,10 @@ int main(int argc, char **argv) {
                     p.unsupportedGeometryShader, p.unsupportedTexFormat, p.unsupportedCube,
                     p.unsupportedImmediate, p.unsupportedLogicOp);
     }
+    for (const auto &kv : pcHist)
+        if (kv.second >= 3)
+            std::printf("[pcsample] T%u pc=%08x x%" PRIu64 "\n", kv.first.first, kv.first.second & ~1u,
+                        kv.second);
     static const char *names[] = {
         "all threads exited", "deadlock", "instruction limit", "process exit", "break", "trap", "fault"};
     std::printf("result: %s\n", names[int(rr)]);

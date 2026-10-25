@@ -428,6 +428,20 @@ int main() {
         s2.draw(3);
         g.run(s2.l);
         CHECK(g.p().stats().unsupportedGeometryShader == 1 && g.p().stats().drawsSkipped == 1);
+        // primitive mode 3 with the geometry shader off is a triangle list (the game does this)
+        Fx h;
+        Scene s3(16, 16);
+        s3.vertices(h, {{-1, -1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0},
+                        {1, -1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0},
+                        {-1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0}});
+        s3.l.add(NUMVERTICES, 3);
+        s3.l.add(VERTEX_OFFSET, 0);
+        s3.l.add(PRIMITIVE_CONFIG, 3 << 8);
+        s3.l.add(DRAWARRAYS, 1);
+        s3.l.add(FINALIZE, 1);
+        h.run(s3.l);
+        CHECK(h.p().stats().unsupportedGeometryShader == 0 && h.p().stats().triangles == 1 &&
+              h.px(kVirtVram, 16, 1, 1).r == 255);
     }
 
     // --- texture formats and wrapping ---

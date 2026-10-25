@@ -3,6 +3,7 @@
 // reference renderer; a GPU backend can reuse the decoded state later). See docs/gpu.md.
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -75,6 +76,10 @@ class Pica {
     void setDrawEndLog(void (*fn)(void *, uint32_t, uint64_t, const float *, const float *)) {
         drawEndLog_ = fn;
     }
+    // Any number of observers, called after each draw with (vertex count, fragments, screen-space min, max).
+    void addDrawEndHook(std::function<void(uint32_t, uint64_t, const float *, const float *)> fn) {
+        drawEndHooks_.push_back(std::move(fn));
+    }
     void setDrawLog(void (*fn)(void *, const std::string &), void *user) {
         drawLog_ = fn;
         drawLogUser_ = user;
@@ -98,6 +103,7 @@ class Pica {
     void (*drawLog_)(void *, const std::string &) = nullptr;
     void *drawLogUser_ = nullptr;
     void (*drawEndLog_)(void *, uint32_t, uint64_t, const float *, const float *) = nullptr;
+    std::vector<std::function<void(uint32_t, uint64_t, const float *, const float *)>> drawEndHooks_;
 
     // FIFO state
     uint32_t uniformIndex_ = 0, uniformWords_[4] = {}, uniformCount_ = 0;

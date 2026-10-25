@@ -278,7 +278,9 @@ std::string drawSummary(const uint32_t *regs);
 
 void Pica::draw(bool indexed) {
     stats_.draws++;
-    if ((regs_[GEOSTAGE_CONFIG] & 3) == 2 || ((regs_[PRIMITIVE_CONFIG] >> 8) & 3) == 3) {
+    // Primitive mode 3 with the geometry shader off (seen in the game: lists of triangles) is drawn as a
+    // plain list.
+    if ((regs_[GEOSTAGE_CONFIG] & 3) == 2) {
         stats_.unsupportedGeometryShader++;
         if (drawLog_) {
             char gb[200];
@@ -409,7 +411,9 @@ void Pica::draw(bool indexed) {
             okv[i] = true;
         }
     }
-    const uint32_t mode = (regs_[PRIMITIVE_CONFIG] >> 8) & 3;
+    uint32_t mode = (regs_[PRIMITIVE_CONFIG] >> 8) & 3;
+    if (mode == 3)
+        mode = 0;
     const uint64_t fragsBefore = stats_.fragments;
     const float bbBefore[4] = {stats_.bboxMin[0], stats_.bboxMin[1], stats_.bboxMax[0], stats_.bboxMax[1]};
     stats_.bboxMin[0] = stats_.bboxMin[1] = 1e30f;
@@ -417,6 +421,8 @@ void Pica::draw(bool indexed) {
     auto finish = [&] {
         if (drawEndLog_)
             drawEndLog_(drawLogUser_, count, stats_.fragments - fragsBefore, stats_.bboxMin, stats_.bboxMax);
+        for (const auto &h : drawEndHooks_)
+            h(count, stats_.fragments - fragsBefore, stats_.bboxMin, stats_.bboxMax);
         stats_.bboxMin[0] = std::min(stats_.bboxMin[0], bbBefore[0]);
         stats_.bboxMin[1] = std::min(stats_.bboxMin[1], bbBefore[1]);
         stats_.bboxMax[0] = std::max(stats_.bboxMax[0], bbBefore[2]);

@@ -190,6 +190,32 @@ int main() {
         CHECK(f.fs(0x08050244, {0, ar, 0, 3, n, ar, 0, 3, n2, 0, kPath, 0, kPath + 0x100}).result() ==
               kFileNotFound);
     }
+    // --- OpenFileDirectly on the low-level save-data archive id ---
+    {
+        Fx f;
+        // (transaction, id, archive path type, size, file path type, size, flags, attributes, desc, archive
+        // path ptr, desc, file path ptr)
+        const uint32_t apPtr = kPath + 0x200, fpPtr = kPath + 0x300;
+        f.path("/", apPtr);
+        const uint32_t fn = f.path("/main", fpPtr);
+        CHECK(f.fs(0x08030204, {0, 0x2345678A, 1, 1, 3, fn, 7, 0, 0, apPtr, 0, fpPtr}).result() ==
+              kNotFormatted);
+        f.fs(0x084C0242, {4, 3, 2, 512, 1, 1, 0, 0, 1, 0, kPath});
+        auto of =
+            f.fs(0x08030204, {0, 0x2345678A, 1, 1, 3, fn, 7, 0, 0, apPtr, 0, fpPtr}); // read|write|create
+        CHECK(of.result() == 0 && f.session(of) != nullptr);
+        std::memcpy(f.gm.base() + kBuf, "save!", 5);
+        CHECK(f.call(*f.session(of), 0x08030102, {0, 0, 5, 1, 0, kBuf}).w[2] == 5);
+        // the file exists in the archive that OpenArchive(4) sees
+        const uint32_t ar = f.openArchive(4);
+        CHECK(ar != 0);
+        const uint32_t n = f.path("/main");
+        CHECK(f.fs(0x080201C2, {0, ar, 0, 3, n, 1, 0, 0, kPath}).result() == 0);
+        const uint32_t bad = f.path("/../escape", fpPtr);
+        CHECK(f.fs(0x08030204, {0, 0x2345678A, 1, 1, 3, bad, 7, 0, 0, apPtr, 0, fpPtr}).result() ==
+              kInvalidPath);
+        CHECK(f.fs(0x08030204, {0, 0x77777777, 1, 1, 3, fn, 7, 0, 0, apPtr, 0, fpPtr}).result() != 0);
+    }
     // --- guest paths cannot leave the archive ---
     {
         Fx f;

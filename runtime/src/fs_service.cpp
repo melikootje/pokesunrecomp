@@ -96,6 +96,9 @@ class RomFile : public Service {
             const uint32_t size = r.cmd[3], desc = r.cmd[4], ptr = r.cmd[5];
             const int64_t n = raw_ ? b_->rawRomfsRead(off, size, k_.guestPtr(ptr))
                                    : b_->romfsRead(path_, off, size, k_.guestPtr(ptr));
+            if (n < 0)
+                std::fprintf(stderr, "[fs:File %s] read of %u bytes at %llu failed\n", path_.c_str(), size,
+                             (unsigned long long)off);
             r.reply(2, 2, n < 0 ? kNotFound : kresult::Success);
             r.cmd[2] = n < 0 ? 0 : uint32_t(n);
             r.cmd[3] = desc;
@@ -318,7 +321,16 @@ class FsService : public Service {
         : k_(k), b_(std::move(b)), saves_(std::move(saves)) {}
     const char *name() const override { return "fs:USER"; }
 
+    // Failed requests are logged (once per command and result) so a silently failing load shows up in the
+    // log.
     void handle(IpcRequest &r) override {
+        const uint32_t header = r.header();
+        dispatch(r);
+        if (int32_t(r.cmd[1]) < 0 && failed_.insert({header, r.cmd[1]}).second)
+            std::fprintf(stderr, "[fs:USER] command %08x failed with %08x\n", header, r.cmd[1]);
+    }
+
+    void dispatch(IpcRequest &r) {
         switch (r.header()) {
         case 0x08010002: // Initialize(process id)
         case 0x08010042:
@@ -519,7 +531,11 @@ class FsService : public Service {
             r.cmd[3] = h;
             return;
         }
-        const bool write = flags & 2;
+        openHostFile(r, host, flags);
+    }
+
+    // Opens a file of a writable archive (shared by OpenFile and OpenFileDirectly).
+    void openHostFile(IpcRequest &r, const fs::path &host, uint32_t flags) {
         if (!SaveStore::isFile(host)) {
             if (!(flags & 4)) {
                 r.reply(1, 0, kFileNotFound);
@@ -531,7 +547,7 @@ class FsService : public Service {
                 return;
             }
         }
-        auto f = std::make_unique<HostFile>(k_, host, write, saves_->maxFileBytes());
+        auto f = std::make_unique<HostFile>(k_, host, flags & 2, saves_->maxFileBytes());
         if (!f->ok()) {
             r.reply(1, 0, kFsError);
             return;
@@ -542,6 +558,8 @@ class FsService : public Service {
         r.cmd[3] = h;
     }
 
+    // OpenFileDirectly(transaction, archive id, archive path type/size, file path type/size, flags,
+    // attributes, archive path, file path). The low-level archive ids are the same archives as OpenArchive's.
     void openFileDirectly(IpcRequest &r) {
         const uint32_t id = r.cmd[2];
         if (id == kArchiveRomFs || id == 0x2345678E) { // RomFS: the binary path selects the raw RomFS image
@@ -556,8 +574,43 @@ class FsService : public Service {
             r.cmd[3] = h;
             return;
         }
-        std::fprintf(stderr, "[fs:USER] OpenFileDirectly archive %08x not implemented\n", id);
-        r.reply(1, 0, kNotFound);
+        uint32_t archiveId = 0;
+        switch (id) {
+        case 0x2345678A:
+            archiveId = kArchiveSaveData;
+            break;
+        case 0x1234567B:
+            archiveId = kArchiveExtSaveData;
+            break;
+        case 0x1234567C:
+            archiveId = kArchiveSharedExt;
+            break;
+        case 0x1234567D:
+            archiveId = kArchiveSystemSave;
+            break;
+        default:
+            break;
+        }
+        if (!saves_ || !archiveId) {
+            std::fprintf(stderr, "[fs:USER] OpenFileDirectly archive %08x not implemented\n", id);
+            r.reply(1, 0, kNotFound);
+            return;
+        }
+        const uint32_t apType = r.cmd[3], apSize = r.cmd[4];
+        const std::string key = archiveKey(archiveId, k_.guestPtr(r.cmd[10]), apType == 2 ? apSize : 0);
+        fs::path dir;
+        if (saves_->archiveDir(key, false, &dir) != Err::Ok ||
+            (archiveId == kArchiveSaveData && !SaveStore::isFile(metaPath(key)))) {
+            r.reply(1, 0, archiveId == kArchiveSaveData ? kNotFormatted : kExtDataNotFound);
+            return;
+        }
+        fs::path host;
+        const std::string path = readPath(k_, r.cmd[5], r.cmd[6], r.cmd[12]);
+        if (SaveStore::resolve(dir, path, &host) != Err::Ok) {
+            r.reply(1, 0, kInvalidPath);
+            return;
+        }
+        openHostFile(r, host, r.cmd[7]);
     }
 
     void fileOp(IpcRequest &r, Op op) {
@@ -703,6 +756,7 @@ class FsService : public Service {
     std::map<uint32_t, Archive> archives_;
     uint32_t nextArchive_ = 0;
     std::set<uint32_t> seen_;
+    std::set<std::pair<uint32_t, uint32_t>> failed_;
 };
 
 } // namespace

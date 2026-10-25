@@ -13,7 +13,17 @@ observed in the kernel/IPC trace, not inferred.
 | Language-selection scene / first frames | running; **both screens render** (software renderer, docs/gpu.md) |
 | First-boot data | `GetFormatInfo` → `FormatSaveData` → `CreateExtSaveData` flow completes (docs/save-data.md) |
 | **Language-selection screen** | **reached and rendered**: "Play the game in" English / Español / Français / Deutsch over the Alola sea backdrop; bottom screen shows the instructions (`PROBE_SHOT`) |
-| Anything past language selection (intro, new game, overworld) | **not yet tried**: input is scripted (`PROBE_PRESS`) but the next steps have not been run |
+| Language choice → "Begin game" → Kukui's message → **name entry** (touch keyboard) → hero portrait → move-in cutscene | **reached with scripted input** (`PROBE_SCRIPT`); modules loaded along the way: `LangSelect`, `AppDemo`, `SequencePlayer`, `Object`, `StrInput`, `HeroSelect` |
+| Cutscene content | **not rendered**: the video-message box interior stays at the clear colour and the move-in scene's top screen has no draws at all |
+
+### The cutscene gap (open)
+Evidence gathered, not yet explained: (1) the backdrop draw is a 256x512 ETC1A4 texture with a transparent window, so the
+window's content must come from earlier draws that never occur (draw logs after 2.3e9 and 3.35e9 guest instructions show only
+backdrop, icons, dialog and glyph draws); (2) `PicaStats` reports no unsupported feature and no skipped draw; (3) no `fs:`
+read or open fails (every failing request is logged); (4) every thread is parked at ordinary wait points or runs
+intermittently (`PROBE_PCSAMPLE`), so it is not a spin or deadlock; (5) the game never requests `y2r`/`mvd`.
+Candidates still open: audio-clocked video/sequence playback (the DSP HLE only fires a frame interrupt and does not maintain
+the shared-memory source/status structures), and 3D passes gated on a state the HLE does not provide.
 
 The game is observed with `PROBE_SHOT`. It used to stop at a *save data is corrupted* screen: the FS HLE answered
 `GetFormatInfo` wrongly and had no writable archives. With the save-data archive in place it runs the genuine first-boot
@@ -41,6 +51,9 @@ sequence and stops, waiting for input, at the language selection.
 The game maps the GPU block at `0x10000000` and HID at `0x10002000`.
 
 ## Probe knobs (local)
-`PROBE_TRACE=file` kernel trace; `PROBE_PRESS=period:hold:hexKeys` and `PROBE_TOUCH=period:hold:x,y[;x,y…]` scripted
-input (in guest instructions); `PROBE_PROTECT=addr:size:afterInsns` makes a range fault to find who touches it;
-`PROBE_WORDS=addr,addr` prints guest words after the run.
+`PROBE_TRACE=file` kernel trace (first 200k lines); `PROBE_SCRIPT=file` timed input (`press`, `touch`, `repeat`; see
+`boot_probe.cpp`), `PROBE_PRESS` / `PROBE_TOUCH` periodic input; `PROBE_SAVEDIR` writable archives (default `./savedata`);
+`PROBE_SHOT=dir:every` PNG screenshots with `PROBE_RENDER_AFTER` / `PROBE_RENDER_WINDOW` (rasterize only when a frame is
+needed: the vertex stage always runs); diagnostics: `PROBE_DRAWLOG`, `PROBE_DRAWSUM[_AFTER]`, `PROBE_DRAWEND[_AFTER]`,
+`PROBE_RT_SEQ`, `PROBE_RT_DRAW`, `PROBE_DUMP_RT`, `PROBE_DUMPMEM=addr:size:file`, `PROBE_PCSAMPLE=fromInsns` (per-thread pc
+histogram), `PROBE_PROTECT=addr:size:afterInsns` (make a range fault to find who touches it), `PROBE_WORDS=addr,addr`.
