@@ -199,7 +199,8 @@ int main(int argc, char **argv) {
                 // identical draw configurations (everything before the vertex-layout part) are counted
                 // together
                 static std::map<std::string, unsigned> uniq;
-                const std::string key = s.substr(s.find(" color="), s.find(" | loc=") - s.find(" color="));
+                const size_t kc = s.find(" color="), kl = s.find(" | loc=");
+                const std::string key = kc == std::string::npos ? s : s.substr(kc, kl - kc);
                 if (uniq[key]++ == 0 && remaining) {
                     remaining--;
                     std::printf("[pica] %s\n", s.c_str());
@@ -319,6 +320,16 @@ int main(int argc, char **argv) {
             seen++;
         });
     }
+    // PROBE_RENDER_AFTER=<insns>: rasterize only after this many guest instructions (the vertex stage always
+    // runs).
+    uint64_t renderAfter = 0;
+    if (const char *ra = std::getenv("PROBE_RENDER_AFTER"))
+        renderAfter = std::strtoull(ra, nullptr, 10);
+    // PROBE_RENDER_WINDOW=<insns>: with PROBE_SHOT, rasterize only during the last <insns> before each
+    // screenshot.
+    uint64_t renderWindow = 0;
+    if (const char *rw = std::getenv("PROBE_RENDER_WINDOW"))
+        renderWindow = std::strtoull(rw, nullptr, 10);
     RunResult rr = RunResult::InstructionLimit;
     if (protSize && protAfter) {
         rr = kernel.run(protAfter);
@@ -327,6 +338,8 @@ int main(int argc, char **argv) {
     for (uint64_t done = 0; done < maxInsns && rr == RunResult::InstructionLimit;) {
         const uint64_t n =
             (pressPeriod || touchPeriod) ? std::min<uint64_t>(5000000, maxInsns - done) : maxInsns;
+        gpu->pica().setRasterEnabled(done >= renderAfter && (!renderWindow || !shotEvery ||
+                                                             done % shotEvery >= shotEvery - renderWindow));
         input->keys = pressPeriod && (done % pressPeriod) < pressHold ? pressMask : 0;
         if (touchPeriod && !touchPts.empty()) {
             const auto &pt = touchPts[(done / touchPeriod) % touchPts.size()];

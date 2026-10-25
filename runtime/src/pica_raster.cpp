@@ -205,6 +205,8 @@ void Pica::drawTriangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
 }
 
 void Pica::rasterTriangle(const ClipVertex &va, const ClipVertex &vb, const ClipVertex &vc) {
+    if (!rasterEnabled_)
+        return;
     const ClipVertex *v[3] = {&va, &vb, &vc};
     float sx[3], sy[3], sz[3], iw[3];
     for (int i = 0; i < 3; i++) {

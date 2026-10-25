@@ -48,6 +48,10 @@ resolved, 0 words left at the unresolved handler, 0 relocated words outside ever
   fallback, which was ~12 % of executed instructions (247M of 2.0G) at the language-select screen.
 - Unload re-points other modules' imports at `OnUnresolved`; reloading at a different address is covered by unit
   tests only, the game has not been seen to do it.
+- **Unload must un-rebase.** After `UnloadCRO` (seen when the game leaves `LangSelect`) the client re-reads the header
+  through its heap view and adds the heap base to the stored offsets, so the header, segment table and import/export
+  table offsets must be file-relative again (otherwise the guest computes a wild address and faults). Tested byte-exact.
+  Relocated words inside the segments are left as they are.
 
 ## Status at the end of this milestone
 The recompiled image boots, loads the CRS and `LangSelect.cro` and runs its main loop (2 × 10⁹ guest instructions

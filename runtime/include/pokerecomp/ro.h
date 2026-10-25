@@ -20,6 +20,7 @@ struct Segment {
         0; // where the segment's initial bytes live in the mapped image (== addr, except data)
     uint32_t size = 0;
     SegType type = SegType::Text;
+    uint32_t fileOffset = 0; // the offset field as stored in the file (restored on unload)
 };
 
 struct Module {
@@ -82,6 +83,9 @@ class Loader {
     };
     bool parse(Module &m, const LoadParams &p, std::string *err);
     bool rebase(Module &m, const LoadParams &p, std::string *err);
+    // Undoes rebase(): header and table offsets become image-relative again, as the guest expects after
+    // UnloadCRO.
+    bool unrebase(Module &m, std::string *err);
     bool relocateInternal(Module &m, std::string *err);
     bool applyBatch(Module &m, uint32_t batchAddr, uint32_t symbol, bool resolved, std::string *err);
     bool linkAll(std::string *err);

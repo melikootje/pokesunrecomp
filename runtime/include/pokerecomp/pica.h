@@ -66,6 +66,9 @@ class Pica {
     uint32_t reg(uint32_t id) const { return regs_[id]; }
     const PicaStats &stats() const { return stats_; }
     PicaStats &mutableStats() { return stats_; }
+    // When false, draws run the vertex stage and are counted but nothing is rasterized (fast-forwarding a
+    // run).
+    void setRasterEnabled(bool on) { rasterEnabled_ = on; }
     ShaderUnit &shader() { return shader_; }
     // Per-draw log hook for diagnostics (receives one line per draw).
     // Called when a draw finishes: vertex count, fragments produced and the triangle extent in screen space.
@@ -102,6 +105,7 @@ class Pica {
     uint32_t fixedWords_[3] = {}, fixedCount_ = 0;
     Vec4 fixedAttr_[12];
     bool finalized_ = false;
+    bool rasterEnabled_ = true;
 
     // state resolved at the start of a draw
     struct Fb {

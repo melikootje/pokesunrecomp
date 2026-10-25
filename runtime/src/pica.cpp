@@ -280,6 +280,16 @@ void Pica::draw(bool indexed) {
     stats_.draws++;
     if ((regs_[GEOSTAGE_CONFIG] & 3) == 2 || ((regs_[PRIMITIVE_CONFIG] >> 8) & 3) == 3) {
         stats_.unsupportedGeometryShader++;
+        if (drawLog_) {
+            char gb[200];
+            std::snprintf(
+                gb, sizeof gb,
+                "[geometry-shader draw skipped] geostage=%08x prim=%08x n=%u gsh_entry=%08x gsh_in=%08x "
+                "gsh_mask=%08x geo2=%08x misc0=%08x misc1=%08x",
+                regs_[GEOSTAGE_CONFIG], regs_[PRIMITIVE_CONFIG], regs_[NUMVERTICES], regs_[0x28A],
+                regs_[0x289], regs_[0x28D], regs_[0x253], regs_[0x252], regs_[0x254]);
+            drawLog_(drawLogUser_, std::string(gb));
+        }
         stats_.drawsSkipped++;
         return;
     }

@@ -191,6 +191,7 @@ bool Loader::parse(Module &m, const LoadParams &p, std::string *err) {
         if (type > 3)
             return fail(err, "bad segment type");
         Segment s;
+        s.fileOffset = off;
         s.size = size;
         s.type = SegType(type);
         if (m.isCrs) { // the CRS describes the main executable: offsets are absolute guest addresses
@@ -293,6 +294,54 @@ bool Loader::rebase(Module &m, const LoadParams &p, std::string *err) {
         if (!add(m.staticAnon.addr + i * kPairSize + 4))
             return false;
     return true;
+}
+
+bool Loader::unrebase(Module &m, std::string *err) {
+    const uint32_t base = m.base;
+    auto sub = [&](uint32_t a) { // *a -= base when non-zero
+        uint32_t v = 0;
+        if (!rd(a, &v, err))
+            return false;
+        return v ? wr(a, v - base, err) : true;
+    };
+    // Entries first (their addresses come from the still-rebased tables), then the header fields.
+    for (uint32_t i = 0; i < m.namedExport.num; i++)
+        if (!sub(m.namedExport.addr + i * kPairSize))
+            return false;
+    for (uint32_t i = 0; i < m.importModule.num; i++) {
+        const uint32_t e = m.importModule.addr + i * kModEntrySize;
+        if (!sub(e) || !sub(e + 4) || !sub(e + 12))
+            return false;
+    }
+    for (uint32_t i = 0; i < m.namedImport.num; i++) {
+        const uint32_t e = m.namedImport.addr + i * kPairSize;
+        if (!sub(e) || !sub(e + 4))
+            return false;
+    }
+    for (uint32_t i = 0; i < m.indexedImport.num; i++)
+        if (!sub(m.indexedImport.addr + i * kPairSize + 4))
+            return false;
+    for (uint32_t i = 0; i < m.anonImport.num; i++)
+        if (!sub(m.anonImport.addr + i * kPairSize + 4))
+            return false;
+    for (uint32_t i = 0; i < m.staticAnon.num; i++)
+        if (!sub(m.staticAnon.addr + i * kPairSize + 4))
+            return false;
+    uint32_t segTable = 0;
+    if (!rd(base + SegTableOffset, &segTable, err))
+        return false;
+    for (uint32_t i = 0; i < m.segs.size(); i++)
+        if (!wr(segTable + i * kSegSize, m.segs[i].fileOffset, err))
+            return false;
+    static const uint32_t kHdr[] = {NameOffset,       CodeOffset,       DataOffset,       ModuleNameOffset,
+                                    SegTableOffset,   ExpNamedOffset,   ExpIndexedOffset, ExpStringsOffset,
+                                    ExpTreeOffset,    ImpModuleOffset,  ExtRelocOffset,   ImpNamedOffset,
+                                    ImpIndexedOffset, ImpAnonOffset,    ImpStringsOffset, StaticAnonOffset,
+                                    IntRelocOffset,   StaticRelocOffset};
+    for (uint32_t off : kHdr)
+        if (!sub(base + off))
+            return false;
+    return wr(base + NextCro, 0, err) && wr(base + PrevCro, 0, err);
 }
 
 // ------------------------------------------------------------------------------------ relocation
@@ -548,6 +597,9 @@ bool Loader::unloadCro(uint32_t base, std::string *err) {
     batches_ = std::move(keep);
     for (auto r = resolved_.begin(); r != resolved_.end();)
         r = r->first == base ? resolved_.erase(r) : std::next(r);
+    // The guest reads the header through its own view after this call and expects it as it was in the file.
+    if (!unrebase(it->second, err))
+        return false;
     allowed_.erase(base);
     order_.erase(std::remove(order_.begin(), order_.end(), base), order_.end());
     mods_.erase(it);

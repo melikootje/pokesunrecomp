@@ -300,7 +300,8 @@ int main() {
         im.anon.push_back({tag(2, 0x20), Batch{{{tag(2, 16), 2, 0, 0}, {tag(0, 8), 2, 0, 0x100}}}});
         da.importModules.push_back(im);
         uint32_t dataOff = 0;
-        f.put(kA, build(da, &dataOff));
+        const std::vector<uint8_t> origA = build(da, &dataOff);
+        f.put(kA, origA);
 
         LoadParams p;
         p.base = kA;
@@ -361,6 +362,13 @@ int main() {
         // Unloading ModA sends the main executable's and ModB's imports back to the unresolved handler.
         CHECK(f.ld.unloadCro(kA, &err));
         CHECK(!f.ld.find(kA));
+        {
+            // After UnloadCRO the guest reads the header again and expects file-relative offsets: the header,
+            // segment table and the import/export tables must be byte-identical to what was loaded.
+            uint32_t extOff = 0;
+            std::memcpy(&extOff, &origA[0xF8], 4);
+            CHECK(extOff > 0x138 && std::memcmp(&f.mem[kA + 0x80], &origA[0x80], extOff - 0x80) == 0);
+        }
         CHECK(f.w(kExeData + 0x100) == f.ld.crs()->onUnresolved + 8);
         CHECK(f.w(kB + dataOffB + 0) == f.ld.crs()->onUnresolved + 2);
         CHECK(f.w(kCrsBase + 0x88) == kB && f.w(kB + 0x8C) == kCrsBase);
