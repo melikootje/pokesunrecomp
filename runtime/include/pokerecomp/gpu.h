@@ -4,6 +4,7 @@
 // capture of the screens the LCD controllers scan out. Addresses are guest virtual addresses; every access is
 // range-checked before it touches host memory.
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "pokerecomp/pica.h"
@@ -42,6 +43,7 @@ struct Image {
 
 struct GxStats {
     uint64_t fills = 0, transfers = 0, copies = 0, dmas = 0, rejected = 0;
+    uint32_t lastTransfer[2][5] = {}; // the last two display transfers: src, dst, inDim, outDim, flags
 };
 
 class Gpu {
@@ -74,6 +76,8 @@ class Gpu {
 
     const GxStats &stats() const { return stats_; }
     pica::Pica &pica() { return pica_; }
+    // Diagnostics: called with {src, dst, inDim, outDim, flags} before each display transfer executes.
+    std::function<void(const uint32_t *)> onDisplayTransfer;
     // True if [addr, addr + size) lies in memory the GPU may touch (application memory or VRAM).
     static bool accessible(uint32_t addr, uint32_t size);
     // The 3D engine addresses memory physically: VRAM at 0x18000000 and FCRAM at 0x20000000 appear to the

@@ -191,12 +191,128 @@ int main(int argc, char **argv) {
         remaining = unsigned(std::strtoul(dl, nullptr, 10));
         gpu->pica().setDrawLog(
             [](void *, const std::string &s) {
-                if (remaining) {
+                // identical draw configurations (everything before the vertex-layout part) are counted
+                // together
+                static std::map<std::string, unsigned> uniq;
+                const std::string key = s.substr(s.find(" color="), s.find(" | loc=") - s.find(" color="));
+                if (uniq[key]++ == 0 && remaining) {
                     remaining--;
                     std::printf("[pica] %s\n", s.c_str());
                 }
             },
             nullptr);
+    }
+    // PROBE_RT_AT=<dir>:<n> dumps the render target (as it is before the transfer) at the n-th display
+    // transfer.
+    if (const char *ra = std::getenv("PROBE_RT_AT")) {
+        static std::string dir;
+        static unsigned target, count;
+        static GuestMemory *gmp;
+        dir = ra;
+        const size_t c = dir.find(':');
+        target = unsigned(std::strtoul(dir.c_str() + c + 1, nullptr, 10));
+        dir = dir.substr(0, c);
+        count = 0;
+        gmp = &gm;
+        gpu->onDisplayTransfer = [](const uint32_t *t) {
+            if (count++ != target)
+                return;
+            std::vector<uint8_t> img(256 * 512 * 4);
+            for (unsigned y = 0; y < 512; y++)
+                for (unsigned x = 0; x < 256; x++) {
+                    const Rgba c =
+                        decodePixel(gmp->base() + t[0] + tiledOffset(x, 511 - y, 256, 4), PixFmt::RGBA8);
+                    uint8_t *d = &img[(size_t(y) * 256 + x) * 4];
+                    d[0] = c.r;
+                    d[1] = c.g;
+                    d[2] = c.b;
+                    d[3] = 255;
+                }
+            char name[300];
+            std::snprintf(name, sizeof name, "%s/rt_%u_out%08x.png", dir.c_str(), target, t[3]);
+            probe::writePng(name, 256, 512, img);
+        };
+    }
+    if (const char *db =
+            std::getenv("PROBE_FRAMEBBOX")) { // print the extent of the triangles drawn before each transfer
+        static unsigned from, count = 0, shown = 0;
+        static Gpu *g;
+        from = unsigned(std::strtoul(db, nullptr, 10));
+        g = gpu.get();
+        auto prev = gpu->onDisplayTransfer;
+        gpu->onDisplayTransfer = [prev](const uint32_t *t) {
+            if (prev)
+                prev(t);
+            pica::PicaStats &st = g->pica().mutableStats();
+            if (count++ >= from && shown++ < 6)
+                std::printf("[frame] transfer out=%08x tris=%" PRIu64 " frags=%" PRIu64 " draws=%" PRIu64
+                            " bbox=(%g,%g)-(%g,%g)\n",
+                            t[3], st.triangles, st.fragments, st.draws, st.bboxMin[0], st.bboxMin[1],
+                            st.bboxMax[0], st.bboxMax[1]);
+            st.bboxMin[0] = st.bboxMin[1] = 1e30f;
+            st.bboxMax[0] = st.bboxMax[1] = -1e30f;
+        };
+    }
+    if (const char *ds =
+            std::getenv("PROBE_DRAWSUM")) { // PROBE_DRAWSUM=<fromDraw>:<count>: full register summary
+        static uint64_t from = 0, num = 0, seen = 0;
+        std::sscanf(ds, "%" SCNu64 ":%" SCNu64, &from, &num);
+        gpu->pica().setDrawLog(
+            [](void *, const std::string &s) {
+                if (seen >= from && seen < from + num)
+                    std::printf("[sum %" PRIu64 "] %s\n", seen, s.c_str());
+                seen++;
+            },
+            nullptr);
+    }
+    if (const char *rd =
+            std::getenv("PROBE_RT_DRAW")) { // PROBE_RT_DRAW=<dir>:<i>,<j>,...: render target after draws
+        static std::string dir;
+        static std::vector<uint64_t> which;
+        static uint64_t seen = 0;
+        static GuestMemory *gmp;
+        std::string spec = rd;
+        const size_t c = spec.find(':');
+        dir = spec.substr(0, c);
+        for (size_t p = c + 1; p < spec.size();) {
+            const size_t e = spec.find(',', p);
+            which.push_back(std::strtoull(spec.c_str() + p, nullptr, 10));
+            if (e == std::string::npos)
+                break;
+            p = e + 1;
+        }
+        gmp = &gm;
+        gpu->pica().setDrawEndLog([](void *, uint32_t, uint64_t, const float *, const float *) {
+            for (uint64_t w : which)
+                if (w == seen) {
+                    std::vector<uint8_t> img(256 * 512 * 4);
+                    for (unsigned y = 0; y < 512; y++)
+                        for (unsigned x = 0; x < 256; x++) {
+                            const Rgba c = decodePixel(
+                                gmp->base() + kVramBase + tiledOffset(x, 511 - y, 256, 4), PixFmt::RGBA8);
+                            uint8_t *d = &img[(size_t(y) * 256 + x) * 4];
+                            d[0] = c.r;
+                            d[1] = c.g;
+                            d[2] = c.b;
+                            d[3] = 255;
+                        }
+                    char name[300];
+                    std::snprintf(name, sizeof name, "%s/draw_%llu.png", dir.c_str(),
+                                  (unsigned long long)seen);
+                    probe::writePng(name, 256, 512, img);
+                }
+            seen++;
+        });
+    }
+    if (const char *dl = std::getenv("PROBE_DRAWEND")) { // PROBE_DRAWEND=<fromDraw>:<count>
+        static uint64_t from = 0, num = 0, seen = 0;
+        std::sscanf(dl, "%" SCNu64 ":%" SCNu64, &from, &num);
+        gpu->pica().setDrawEndLog([](void *, uint32_t n, uint64_t frags, const float *mn, const float *mx) {
+            if (seen >= from && seen < from + num)
+                std::printf("[draw %" PRIu64 "] n=%u frags=%" PRIu64 " bbox=(%g,%g)-(%g,%g)\n", seen, n,
+                            frags, mn[0], mn[1], mx[0], mx[1]);
+            seen++;
+        });
     }
     RunResult rr = RunResult::InstructionLimit;
     if (protSize && protAfter) {
@@ -221,6 +337,38 @@ int main(int argc, char **argv) {
             break;
     }
     shot(maxInsns);
+    if (const char *dm = std::getenv("PROBE_DUMPMEM")) { // PROBE_DUMPMEM=<hexAddr>:<hexSize>:<file>
+        unsigned a = 0, n = 0;
+        char path[400] = {};
+        if (std::sscanf(dm, "%x:%x:%399s", &a, &n, path) == 3) {
+            std::ofstream o(path, std::ios::binary);
+            o.write(reinterpret_cast<const char *>(gm.base() + a), n);
+        }
+    }
+    if (const char *rt = std::getenv("PROBE_DUMP_RT")) { // raw 256x512 RGBA8 render target at VRAM 0x18000000
+        std::vector<uint8_t> img(256 * 512 * 4);
+        for (unsigned y = 0; y < 512; y++)
+            for (unsigned x = 0; x < 256; x++) {
+                const Rgba c =
+                    decodePixel(gm.base() + kVramBase + tiledOffset(x, 511 - y, 256, 4), PixFmt::RGBA8);
+                uint8_t *d = &img[(size_t(y) * 256 + x) * 4];
+                d[0] = c.r;
+                d[1] = c.g;
+                d[2] = c.b;
+                d[3] = 255;
+            }
+        probe::writePng(rt, 256, 512, img);
+    }
+    for (int sc = 0; sc < 2; sc++) {
+        const Gpu::Screen &s = gpu->screen(sc);
+        std::printf("screen %d: valid=%d addr=%08x stride=%u fmt=%d\n", sc, s.valid, s.addr, s.stride,
+                    int(s.fmt));
+    }
+    for (int k = 0; k < 2; k++) {
+        const uint32_t *t = gpu->stats().lastTransfer[k];
+        std::printf("last transfer: src=%08x dst=%08x in=%08x out=%08x flags=%08x\n", t[0], t[1], t[2], t[3],
+                    t[4]);
+    }
     {
         const GxStats &g = gpu->stats();
         std::printf("gx: fills=%" PRIu64 " transfers=%" PRIu64 " copies=%" PRIu64 " dmas=%" PRIu64

@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "pokerecomp/gpu.h"
@@ -389,8 +390,9 @@ void Pica::draw(bool indexed) {
         if (it == cache.end()) {
             Vec4 in[16];
             ClipVertex cv;
-            if (fetchVertex(idx[i], in) && runVertex(in, &cv))
+            if (fetchVertex(idx[i], in) && runVertex(in, &cv)) {
                 it = cache.emplace(idx[i], cv).first;
+            }
         }
         if (it != cache.end()) {
             verts[i] = it->second;
@@ -398,6 +400,18 @@ void Pica::draw(bool indexed) {
         }
     }
     const uint32_t mode = (regs_[PRIMITIVE_CONFIG] >> 8) & 3;
+    const uint64_t fragsBefore = stats_.fragments;
+    const float bbBefore[4] = {stats_.bboxMin[0], stats_.bboxMin[1], stats_.bboxMax[0], stats_.bboxMax[1]};
+    stats_.bboxMin[0] = stats_.bboxMin[1] = 1e30f;
+    stats_.bboxMax[0] = stats_.bboxMax[1] = -1e30f;
+    auto finish = [&] {
+        if (drawEndLog_)
+            drawEndLog_(drawLogUser_, count, stats_.fragments - fragsBefore, stats_.bboxMin, stats_.bboxMax);
+        stats_.bboxMin[0] = std::min(stats_.bboxMin[0], bbBefore[0]);
+        stats_.bboxMin[1] = std::min(stats_.bboxMin[1], bbBefore[1]);
+        stats_.bboxMax[0] = std::max(stats_.bboxMax[0], bbBefore[2]);
+        stats_.bboxMax[1] = std::max(stats_.bboxMax[1], bbBefore[3]);
+    };
     auto tri = [&](uint32_t a, uint32_t b, uint32_t c) {
         if (okv[a] && okv[b] && okv[c])
             drawTriangle(verts[a], verts[b], verts[c]);
@@ -412,18 +426,25 @@ void Pica::draw(bool indexed) {
         for (uint32_t i = 1; i + 1 < count; i++)
             tri(0, i, i + 1);
     }
+    finish();
 }
 
 std::string drawSummary(const uint32_t *regs) {
     char b[400];
-    std::snprintf(
-        b, sizeof b,
-        "draw n=%u prim=%u color=%08x(%ux%u fmt %u) depth=%08x fmt=%u tex=%x env0=%08x/%08x/%08x blend=%08x "
-        "func=%08x dmask=%08x alpha=%08x",
-        regs[NUMVERTICES], (regs[PRIMITIVE_CONFIG] >> 8) & 3, regs[COLORBUF_LOC] * 8, regs[FB_DIM] & 0x7FF,
-        ((regs[FB_DIM] >> 12) & 0x3FF) + 1, (regs[COLORBUF_FORMAT] >> 16) & 7, regs[DEPTHBUF_LOC] * 8,
-        regs[DEPTHBUF_FORMAT] & 3, regs[TEXUNIT_CONFIG] & 7, regs[TEXENV0], regs[TEXENV0 + 1],
-        regs[TEXENV0 + 2], regs[COLOR_OPERATION], regs[BLEND_FUNC], regs[DEPTH_COLOR_MASK], regs[ALPHA_TEST]);
+    std::snprintf(b, sizeof b,
+                  "draw n=%u prim=%u fbdim=%08x color=%08x(%ux%u fmt %u) depth=%08x fmt=%u tex=%x "
+                  "env0=%08x/%08x/%08x blend=%08x "
+                  "func=%08x dmask=%08x alpha=%08x",
+                  regs[NUMVERTICES], (regs[PRIMITIVE_CONFIG] >> 8) & 3, regs[FB_DIM], regs[COLORBUF_LOC] * 8,
+                  regs[FB_DIM] & 0x7FF, ((regs[FB_DIM] >> 12) & 0x3FF) + 1, (regs[COLORBUF_FORMAT] >> 16) & 7,
+                  regs[DEPTHBUF_LOC] * 8, regs[DEPTHBUF_FORMAT] & 3, regs[TEXUNIT_CONFIG] & 7, regs[TEXENV0],
+                  regs[TEXENV0 + 1], regs[TEXENV0 + 2], regs[COLOR_OPERATION], regs[BLEND_FUNC],
+                  regs[DEPTH_COLOR_MASK], regs[ALPHA_TEST]);
+    char b3[200];
+    std::snprintf(b3, sizeof b3, " | vp=%g,%g xy=%08x scissor=%x/%08x/%08x cull=%x depthmap=%x/%g/%g",
+                  regF24(regs[VIEWPORT_WIDTH]), regF24(regs[VIEWPORT_HEIGHT]), regs[VIEWPORT_XY],
+                  regs[SCISSOR_MODE] & 3, regs[SCISSOR_POS], regs[SCISSOR_DIM], regs[FACECULLING] & 3,
+                  regs[DEPTHMAP_ENABLE] & 1, regF24(regs[DEPTHMAP_SCALE]), regF24(regs[DEPTHMAP_OFFSET]));
     char b2[400];
     std::snprintf(
         b2, sizeof b2,
@@ -434,7 +455,7 @@ std::string drawSummary(const uint32_t *regs) {
         regs[VSH_ATTR_PERM_LOW], regs[VSH_ATTR_PERM_HIGH], regs[VSH_OUTMAP_MASK], regs[OUTMAP_TOTAL],
         regs[OUTMAP_O0], regs[OUTMAP_O0 + 1], regs[OUTMAP_O0 + 2], regs[VSH_ENTRYPOINT], regs[TEXUNIT0_DIM],
         regs[TEXUNIT0_PARAM], regs[TEXUNIT0_ADDR], regs[TEXUNIT0_TYPE]);
-    return std::string(b) + b2;
+    return std::string(b) + b3 + b2;
 }
 
 } // namespace pica

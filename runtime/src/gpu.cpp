@@ -128,6 +128,11 @@ bool Gpu::memoryFill(uint32_t start, uint32_t end, uint32_t value, uint32_t cont
 }
 
 bool Gpu::displayTransfer(uint32_t src, uint32_t dst, uint32_t inDim, uint32_t outDim, uint32_t flags) {
+    std::memcpy(stats_.lastTransfer[0], stats_.lastTransfer[1], sizeof stats_.lastTransfer[0]);
+    const uint32_t cur[5] = {src, dst, inDim, outDim, flags};
+    std::memcpy(stats_.lastTransfer[1], cur, sizeof cur);
+    if (onDisplayTransfer)
+        onDisplayTransfer(cur);
     const bool flip = flags & 1, linearToTiled = flags & 2, tiledToTiled = flags & 0x20;
     const bool block32 = flags & 0x10000;
     const unsigned inFmtV = (flags >> 8) & 7, outFmtV = (flags >> 12) & 7, scale = (flags >> 24) & 3;

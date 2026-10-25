@@ -14,6 +14,7 @@ namespace pokerecomp {
 namespace pica {
 
 struct PicaStats {
+    float bboxMin[2] = {1e30f, 1e30f}, bboxMax[2] = {-1e30f, -1e30f}; // screen extent of rasterized triangles
     uint64_t commandLists = 0, regWrites = 0, draws = 0, triangles = 0, culled = 0, clipped = 0,
              fragments = 0, shaderRuns = 0, shaderFailures = 0, drawsSkipped = 0;
     // Features the renderer does not implement, counted when a draw used them (so they show up in reports).
@@ -64,8 +65,13 @@ class Pica {
 
     uint32_t reg(uint32_t id) const { return regs_[id]; }
     const PicaStats &stats() const { return stats_; }
+    PicaStats &mutableStats() { return stats_; }
     ShaderUnit &shader() { return shader_; }
     // Per-draw log hook for diagnostics (receives one line per draw).
+    // Called when a draw finishes: vertex count, fragments produced and the triangle extent in screen space.
+    void setDrawEndLog(void (*fn)(void *, uint32_t, uint64_t, const float *, const float *)) {
+        drawEndLog_ = fn;
+    }
     void setDrawLog(void (*fn)(void *, const std::string &), void *user) {
         drawLog_ = fn;
         drawLogUser_ = user;
@@ -88,6 +94,7 @@ class Pica {
     PicaStats stats_;
     void (*drawLog_)(void *, const std::string &) = nullptr;
     void *drawLogUser_ = nullptr;
+    void (*drawEndLog_)(void *, uint32_t, uint64_t, const float *, const float *) = nullptr;
 
     // FIFO state
     uint32_t uniformIndex_ = 0, uniformWords_[4] = {}, uniformCount_ = 0;
@@ -102,6 +109,7 @@ class Pica {
         uint32_t width = 0, height = 0;
         unsigned colorBytes = 4, depthBytes = 0, colorFmt = 0;
         bool block32 = false;
+        bool flip = true; // FB_DIM bit 24 set (what the game uses): row y is stored at height - 1 - y
     } fb_;
     struct Attr {
         int buffer = -1;
@@ -116,6 +124,7 @@ class Pica {
     uint32_t outRegs_[7] = {}, numOut_ = 0;
     TexInfo tex_[3];
     bool texEnabled_[3] = {false, false, false};
+    bool stageActive_[6] = {true, true, true, true, true, true}; // pass-through TEV stages are skipped
     float halfW_ = 0, halfH_ = 0, vpX_ = 0, vpY_ = 0, depthScale_ = 0, depthOffset_ = 0;
     bool unsupportedTexThisDraw_ = false;
 };

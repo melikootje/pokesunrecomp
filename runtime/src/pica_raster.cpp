@@ -94,6 +94,7 @@ bool Pica::prepareTarget() {
     fb_.colorFmt = (regs_[COLORBUF_FORMAT] >> 16) & 7;
     fb_.colorBytes = fb_.colorFmt == 0 ? 4 : 2;
     fb_.block32 = regs_[FB_BLOCK32] & 1;
+    fb_.flip = (dim >> 24) & 1;
     if (!fb_.width || !fb_.height || (fb_.colorFmt != 0 && fb_.colorFmt < 2) || fb_.colorFmt > 4)
         return false;
     const uint32_t stride = (fb_.width + 7) & ~7u, rows = (fb_.height + 7) & ~7u;
@@ -110,6 +111,20 @@ bool Pica::prepareTarget() {
 }
 
 void Pica::prepareTextures() {
+    // A TEV stage that replaces the result with the previous result (and does not feed the combiner buffer)
+    // changes nothing; most draws use one or two stages, so skipping the rest saves most of the per-fragment
+    // work.
+    static const uint32_t kStageRegs[6] = {TEXENV0, TEXENV1, TEXENV2, TEXENV3, TEXENV4, TEXENV5};
+    for (int s = 0; s < 6; s++) {
+        const uint32_t src = regs_[kStageRegs[s]], ops = regs_[kStageRegs[s] + 1],
+                       comb = regs_[kStageRegs[s] + 2];
+        const uint32_t scale = regs_[kStageRegs[s] + 4];
+        const bool passthrough =
+            (src & 0x000F000F) == 0x000F000F && (ops & 0x0000700F) == 0 && comb == 0 && scale == 0;
+        const bool feedsBuffer = s < 4 && (((regs_[TEXENV_UPDATE_BUFFER] >> (8 + s)) & 1) ||
+                                           ((regs_[TEXENV_UPDATE_BUFFER] >> (12 + s)) & 1));
+        stageActive_[s] = !(passthrough && !feedsBuffer);
+    }
     static const uint32_t kBase[3][5] = {
         {TEXUNIT0_BORDER, TEXUNIT0_DIM, TEXUNIT0_PARAM, TEXUNIT0_ADDR, TEXUNIT0_TYPE},
         {TEXUNIT1_BORDER, TEXUNIT1_DIM, TEXUNIT1_PARAM, TEXUNIT1_ADDR, TEXUNIT1_TYPE},
@@ -200,6 +215,12 @@ void Pica::rasterTriangle(const ClipVertex &va, const ClipVertex &vb, const Clip
         sx[i] = (v[i]->pos[0] * iw[i] + 1.0f) * halfW_ + vpX_;
         sy[i] = (v[i]->pos[1] * iw[i] + 1.0f) * halfH_ + vpY_;
         sz[i] = v[i]->pos[2] * iw[i];
+    }
+    for (int i = 0; i < 3; i++) {
+        stats_.bboxMin[0] = std::min(stats_.bboxMin[0], sx[i]);
+        stats_.bboxMin[1] = std::min(stats_.bboxMin[1], sy[i]);
+        stats_.bboxMax[0] = std::max(stats_.bboxMax[0], sx[i]);
+        stats_.bboxMax[1] = std::max(stats_.bboxMax[1], sy[i]);
     }
     float area = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sy[1] - sy[0]) * (sx[2] - sx[0]);
     if (area == 0 || std::isnan(area))
@@ -328,10 +349,12 @@ float blendEq(unsigned eq, float s, float d) {
 void Pica::fragment(int x, int y, float depth, const float *attr) {
     stats_.fragments++;
     const uint32_t stride = (fb_.width + 7) & ~7u;
-    uint8_t *cpix = fb_.color + tiledOffset(unsigned(x), unsigned(y), stride, fb_.colorBytes, fb_.block32);
+    // Rows are stored upside down in the buffer (the game's display transfers read from the bottom-aligned
+    // area).
+    const unsigned row = unsigned(fb_.flip ? int(fb_.height) - 1 - y : y);
+    uint8_t *cpix = fb_.color + tiledOffset(unsigned(x), row, stride, fb_.colorBytes, fb_.block32);
     uint8_t *dpix =
-        fb_.depth ? fb_.depth + tiledOffset(unsigned(x), unsigned(y), stride, fb_.depthBytes, fb_.block32)
-                  : nullptr;
+        fb_.depth ? fb_.depth + tiledOffset(unsigned(x), row, stride, fb_.depthBytes, fb_.block32) : nullptr;
 
     // --- texturing and the TEV combiner chain ---
     Color primary = {clamp01(attr[kColor]), clamp01(attr[kColor + 1]), clamp01(attr[kColor + 2]),
@@ -360,6 +383,8 @@ void Pica::fragment(int x, int y, float depth, const float *attr) {
     Color prev = primary, buffer = fromRgba8(regs_[TEXENV_BUFFER_COLOR]);
     const uint32_t upd = regs_[TEXENV_UPDATE_BUFFER];
     for (int s = 0; s < 6; s++) {
+        if (!stageActive_[s])
+            continue;
         const uint32_t src = regs_[kStage[s]], ops = regs_[kStage[s] + 1], comb = regs_[kStage[s] + 2];
         const Color konst = fromRgba8(regs_[kStage[s] + 3]);
         const uint32_t scale = regs_[kStage[s] + 4];

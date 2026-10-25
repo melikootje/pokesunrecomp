@@ -74,7 +74,9 @@ struct Fx {
     }
     // Reads colour buffer pixel (x, y) of a tiled 32-bit buffer `w` pixels wide at virtual `base`.
     Rgba px(uint32_t base, unsigned w, unsigned x, unsigned y) {
-        return decodePixel(gm.base() + base + tiledOffset(x, y, w, 4), PixFmt::RGBA8);
+        // rows are stored upside down (FB_DIM bit 24, as the game sets it): screen row y is memory row w - 1
+        // - y
+        return decodePixel(gm.base() + base + tiledOffset(x, w - 1 - y, w, 4), PixFmt::RGBA8);
     }
 };
 
@@ -247,6 +249,24 @@ int main() {
         CHECK(g.p().stats().culled == 1 && g.px(kVirtVram, 16, 1, 1).a == 0);
     }
 
+    // --- FB_DIM bit 24: set (as the game does) stores row y at height - 1 - y; clear stores it at y ---
+    for (int flip = 0; flip < 2; flip++) {
+        Fx f;
+        Scene sc(16, 16);
+        sc.l.add(FB_DIM, 16 | 15u << 12 | (flip ? 1u << 24 : 0));
+        sc.vertices(f, {{-1, -1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0},
+                        {1, -1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0},
+                        {-1, -1 + 0.25f, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0}});
+        sc.draw(3); // a thin sliver along screen row 0 (y = 0)
+        f.run(sc.l);
+        const unsigned memRowOfY0 = flip ? 15 : 0;
+        const Rgba at0 =
+            decodePixel(f.gm.base() + kVirtVram + tiledOffset(2, memRowOfY0, 16, 4), PixFmt::RGBA8);
+        const Rgba other =
+            decodePixel(f.gm.base() + kVirtVram + tiledOffset(2, 15 - memRowOfY0, 16, 4), PixFmt::RGBA8);
+        CHECK(at0.r == 255 && other.a == 0);
+    }
+
     // --- two triangles sharing an edge fill a quad exactly once (top-left rule, no gaps) ---
     {
         Fx f;
@@ -269,7 +289,7 @@ int main() {
         CHECK(wrong == 0);
     }
 
-    // --- texture: replace, orientation (memory row 0 is v = 0) and alpha blending ---
+    // --- texture: replace, orientation (memory row 0 is v = 1) and alpha blending ---
     {
         Fx f;
         Scene sc(16, 16);
@@ -293,11 +313,13 @@ int main() {
                         V(-1, 1, 0, 1)});
         sc.draw(6);
         f.run(sc.l);
-        // screen pixel (x, y) in 16x16 -> texel (x/2, y/2) because v = 0 is screen row 0
+        // screen pixel (x, y) in 16x16 -> texel column x/2 and memory row 7 - y/2 (v = 0 is the last stored
+        // row)
         for (unsigned y = 0; y < 16; y += 3)
             for (unsigned x = 0; x < 16; x += 3) {
                 const Rgba c = f.px(kVirtVram, 16, x, y);
-                CHECK(c.r == (x / 2) * 32 && c.g == (y / 2) * 32 && c.a == 255);
+                CHECK(c.r == (x / 2) * 32 && c.g == (7 - y / 2) * 32 &&
+                      c.a == 255); // v = 0 samples the last memory row
             }
         CHECK(f.p().stats().unsupportedTexFormat == 0 && f.p().stats().badAddress == 0);
     }

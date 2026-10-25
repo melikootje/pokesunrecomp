@@ -26,17 +26,30 @@ At VBlank the GSP latches the framebuffer-info structure; `Gpu::capture` reads t
   `virtual + GetProcessInfo(self, 20)`; the kernel returns `0x0C000000` for that type (it returned 0, which made
   every vertex/texture address look virtual). Guest code: conversion at `0x172be4`, call site `0x1055ec`.
 
-## Assumptions not yet confirmed by pictures
-- Texture memory row 0 is `v = 0` (checked only on synthetic data).
+## Verified by rendering the real game (frames inspected locally; images are never committed)
+The top screen shows the game's Alola sea-and-sun backdrop and the bottom screen a dialog box whose text reads
+correctly in the game's own font, so the following were each confirmed by a wrong picture turning into a right one:
+- **Colour buffer rows are stored upside down.** With `FB_DIM` bit 24 set (the game always sets it), row `y` is stored at
+  memory row `height - 1 - y`. The game renders each screen bottom-aligned in the 256x512 buffer and its display
+  transfers start at row 112 (top) and 192 (bottom); without the flip only 288 of 400 and 128 of 320 columns appeared.
+- **Texture rows:** `t = 0` is the bottom of the image and memory stores the top row first, so the sampler reads row
+  `height - 1 - t`. Found from the font atlas: glyph UVs sit at `v ~ 1` while the glyphs are in the first rows of memory.
+- **4-bit textures** (I4, A4): the even pixel is the low nibble (the opposite order turns the font atlas to noise).
+- **Addresses** are physical (see above); vertex data, textures and targets all resolve.
+
+## Assumptions still unconfirmed
 - Depth: `d = z/w * scale + offset`, clamped to [0, 1]; only the near plane is clipped (`z >= -w`).
-- Face culling: 1 keeps clockwise, 2 keeps counter-clockwise (screen space, y up).
-- Colour buffer row 0 is the bottom; no vertical flip is applied (flip bit of `FB_DIM` assumed set).
-- ETC1 block byte order (the whole 8-byte block reversed relative to the standard layout) and the ETC1A4 alpha
-  nibble order are taken from documentation and tested on synthetic blocks only.
+- Face culling: 1 keeps clockwise, 2 keeps counter-clockwise (screen space, y up). The game's draws use none so far.
+- ETC1/ETC1A4 byte order (whole 8-byte block reversed) and the ETC1A4 alpha nibble order: synthetic blocks only.
+- Mipmapping is ignored (level 0 only); bilinear filtering is used when the magnification filter says so.
 
 ## Not implemented (counted in `PicaStats::unsupported*` and printed by `boot_probe`)
 Fragment lighting, fog, procedural textures, gas/shadow modes, cube/projection/shadow textures, geometry shaders
 and immediate-mode vertices, mipmapping, logic ops other than copy, `LITP`, the 16-bit float24 mantissa in shaders.
+
+## Performance
+The software renderer is a correctness tool. The real game issues ~15 draws per 30-draw frame cycle with tens of
+thousands of fragments each; 2e8 guest instructions take a few minutes. It is not a real-time path.
 
 ## Testing
 `gpu_test` (transfer engine), `pica_shader_test` (ISA, hand-assembled programs), `pica_test` (command lists,

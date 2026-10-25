@@ -10,11 +10,12 @@ observed in the kernel/IPC trace, not inferred.
 | `gsp::Gpu` (shared memory, interrupt queue, GX commands) | reached; **no rendering** (commands are acknowledged) |
 | `hid:USER` shared memory | mapped and polled by the game (see below) |
 | `ldr:ro`: CRS + `LangSelect.cro` | reached, loaded and relocated (docs/ldr-ro.md) |
-| Language-selection scene | running (main loop, 2–3·10⁹ guest instructions, no fault) |
+| Language-selection scene / first frames | running; **both screens render** (software renderer, docs/gpu.md) |
+| What the game shows | its **save-data error screen** ("The saved game data is corrupted. Please go to the HOME Menu…"): the FS HLE provides no save archive |
 | Anything past language selection (title, new game, overworld) | **not reached** |
 
-The game cannot be observed yet: nothing is drawn because the PICA200 is not emulated. Input (key presses and touch)
-changes what the game executes but its effect cannot be judged without a picture.
+The game can now be observed (`PROBE_SHOT`). It stops at the save-corrupted screen, so the next milestone is the
+save-data archive (`fs:USER` OpenArchive for save data / extdata, plus `fs:File` writes).
 
 ## Bugs found by this work (all fixed, with tests)
 - **16 KiB host pages vs 4 KiB guest pages.** The kernel rounded every allocation to the *host* page, so the game's
@@ -23,6 +24,8 @@ changes what the game executes but its effect cannot be judged without a picture
   (`kernel_test`: "4 KiB guest pages on a larger host page").
 - **HID pad layout.** The service wrote pad entries at `+0x20`; the game's reader (`0x28242c`) reads entry
   `index % 8` at `+0x28 + 16·i` (held, pressed, released, circle pad as two halfwords).
+- **Linear-heap physical addresses.** `svcGetProcessInfo` type 20 returned 0, so every GPU address the game wrote was
+  virtual; it must return `0x0C000000` (docs/gpu.md).
 - **`ldr:ro`** answered success for everything without mapping anything (docs/ldr-ro.md).
 
 ## HID shared memory (evidence from the game's own readers)

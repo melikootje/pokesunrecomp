@@ -7,8 +7,8 @@ Static recompilation tooling and HLE runtime for running a user-owned copy of **
 [docs/legal-policy.md](docs/legal-policy.md) first.
 
 ## Status
-The recompiled game boots, loads its static modules and runs the language-select scene; the 3D pipeline is a
-software reference renderer under development. Measured status and evidence: [docs/boot-status.md](docs/boot-status.md),
+The recompiled game boots, loads its static modules and renders its first screens through a software PICA200
+reference renderer; it currently stops at a save-data error screen (the FS HLE has no save archive yet). Measured status and evidence: [docs/boot-status.md](docs/boot-status.md),
 [docs/ldr-ro.md](docs/ldr-ro.md), [docs/gpu.md](docs/gpu.md).
 
 ## Scope

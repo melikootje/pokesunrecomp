@@ -165,13 +165,16 @@ bool sampleTexture(const TexInfo &t, float u, float v, float *out) {
     if (!t.data || !t.width || !t.height)
         return false;
     const int w = int(t.width), h = int(t.height);
+    // t = 0 is the bottom of the image and memory stores the image top row first (verified on the game's font
+    // atlas: its glyph rows sit at v ~ 1 while the glyphs are in the first rows of memory), so row = height -
+    // 1 - t.
     auto tap = [&](int x, int y, float *o) {
         const int wx = wrapCoord(x, w, t.wrapS), wy = wrapCoord(y, h, t.wrapT);
         if (wx < 0 || wy < 0) {
             std::memcpy(o, t.border, 4 * sizeof(float));
             return true;
         }
-        return fetchTexel(t, wx, wy, o);
+        return fetchTexel(t, wx, h - 1 - wy, o);
     };
     if (!t.magLinear) {
         return tap(int(std::floor(u * float(w))), int(std::floor(v * float(h))), out);
