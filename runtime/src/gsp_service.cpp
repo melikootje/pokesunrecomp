@@ -141,6 +141,8 @@ class Gsp : public Service {
 
     // Runs the transfer-engine side of a GX command (word layout: 3dbrew, GSP shared memory).
     void executeGx(uint32_t id, const uint32_t *w) {
+        if (gpu_->onGxCommand)
+            gpu_->onGxCommand(id, w);
         switch (id) {
         case 0: // RequestDma(src, dst, size)
             gpu_->dma(w[1], w[2], w[3]);

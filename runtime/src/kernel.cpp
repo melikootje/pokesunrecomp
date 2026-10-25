@@ -1187,6 +1187,7 @@ bool Kernel::Impl::handleSvc(Thread *t) {
         req.kernel = &K;
         req.cmd = reinterpret_cast<uint32_t *>(K.gm_.base() + t->tls + kCmdBufOffset);
         K.stats_.ipcRequests++;
+        K.ipcHist_[{ses.service->name(), req.header()}]++;
         std::snprintf(tb, sizeof tb, "ipc %s %08x", ses.service->name(), req.header());
         I.trace(tb);
         // A service dereferences guest pointers from the request (static buffers, output buffers). A bad one

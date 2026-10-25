@@ -78,6 +78,8 @@ class Gpu {
     pica::Pica &pica() { return pica_; }
     // Diagnostics: called with {src, dst, inDim, outDim, flags} before each display transfer executes.
     std::function<void(const uint32_t *)> onDisplayTransfer;
+    // Diagnostics: called with (command id, 8 command words) for every GX command the GSP executes.
+    std::function<void(uint32_t, const uint32_t *)> onGxCommand;
     // True if [addr, addr + size) lies in memory the GPU may touch (application memory or VRAM).
     static bool accessible(uint32_t addr, uint32_t size);
     // The 3D engine addresses memory physically: VRAM at 0x18000000 and FCRAM at 0x20000000 appear to the

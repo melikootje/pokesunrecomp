@@ -83,6 +83,9 @@ enum Reg : uint32_t {
     VERTEX_OFFSET = 0x22A,
     DRAWARRAYS = 0x22E,
     DRAWELEMENTS = 0x22F,
+    CMDBUF_SIZE0 = 0x238, // size >> 3 (bits 0-20)
+    CMDBUF_ADDR0 = 0x23A, // physical address >> 3
+    CMDBUF_JUMP0 = 0x23C, // writing runs the buffer described by SIZE0/ADDR0; the 1 registers do the same
     FIXEDATTRIB_INDEX = 0x232,
     FIXEDATTRIB_DATA0 = 0x233,
     VSH_NUM_ATTR = 0x242,

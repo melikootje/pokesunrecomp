@@ -57,3 +57,23 @@ The game maps the GPU block at `0x10000000` and HID at `0x10002000`.
 needed: the vertex stage always runs); diagnostics: `PROBE_DRAWLOG`, `PROBE_DRAWSUM[_AFTER]`, `PROBE_DRAWEND[_AFTER]`,
 `PROBE_RT_SEQ`, `PROBE_RT_DRAW`, `PROBE_DUMP_RT`, `PROBE_DUMPMEM=addr:size:file`, `PROBE_PCSAMPLE=fromInsns` (per-thread pc
 histogram), `PROBE_PROTECT=addr:size:afterInsns` (make a range fault to find who touches it), `PROBE_WORDS=addr,addr`.
+
+## Open blocker: offscreen 3D model draws produce no fragments (investigated)
+
+Verified on the real dump (move-in cutscene, ~2.3 G instructions with `PROBE_SCRIPT`):
+
+- The game issues its 3D scenes from **nested command buffers** (`CMDBUF_JUMP`), now executed. An offscreen
+  256x512 render target at phys `0x18100000` is later sampled by 12 composite draws.
+- The ~120 offscreen model draws yield zero fragments because the vertex shader outputs **NaN clip positions**.
+  Vertex inputs are sane. The NaN comes from the vertex-shader float uniforms `c90..c92` (view/model rows) and
+  `c87` (projection row 0), which the game itself uploads as NaN (`0x7fc00000` / `0xffc00000`, float32 upload
+  mode). The shader interpreter is not the cause (instruction trace: `DP3 ... c90` consumes the NaN).
+- The NaN is **not** created by any VFP data-processing op: instrumenting `rc_vfp_data` showed no op that turns
+  non-NaN inputs into NaN (and no IOC exceptions). So it enters through memory (a load / HLE-provided value /
+  file data) before the matrix is built. The producing guest code is still unidentified.
+- Next step: find the first guest store of a NaN word into the matrix source (write-watch on the command-list
+  words, or NaN check in store paths) and trace the value back; suspects are an HLE-provided value (shared
+  page, tick/time based animation delta) or file data read incorrectly.
+
+Other known gaps: fragment lighting is not implemented (30k draws use it), buffer-jump chains hit the depth
+limit (256) 1,825 times (a 400/1056-byte pair repeating), DSP HLE only provides the frame counter.

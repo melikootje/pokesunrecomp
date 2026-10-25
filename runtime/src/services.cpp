@@ -284,13 +284,27 @@ class DspService : public Service {
     // Audio pipe: state-change commands from the application. Initialize answers with the addresses of the
     // shared-memory structures (approximate layout; the real mixer arrives with issue #13) and starts the
     // frame interrupt (every 4.096 ms of virtual time).
+    // Shared-memory layout the DSP publishes through the audio pipe. The game only follows the pointers it
+    // gets from the pipe response (the second region is the same address with bit 16 set), so the offsets are
+    // ours; the sizes come from the strides the game's audio engine uses: 24 sources x {0xC0-byte
+    // configuration, 12-byte status, 32-byte ADPCM coefficients}. Order of the 15 addresses: frame counter,
+    // source configurations, source statuses, ADPCM coefficients, DSP configuration, DSP status, final
+    // samples, intermediate mix samples, compressor, debug, 5 unknown.
+    static constexpr uint32_t kRegionOffsets[15] = {0x0000, 0x0010, 0x1210, 0x1330, 0x1630,
+                                                    0x1A30, 0x1A60, 0x1E60, 0x2E60, 0x2F60,
+                                                    0x3060, 0x3160, 0x3260, 0x3360, 0x3460};
+    static constexpr uint32_t kRegion0 = kDspRam + 0x10000, kRegion1 = kDspRam + 0x30000,
+                              kRegionSize = 0x8000;
+
     void onAudioPipeWrite(const uint8_t *data, uint32_t size) {
         (void)size;
         const uint16_t cmd = uint16_t(data[0] | data[1] << 8);
         if (cmd == 0) { // Initialize
-            const std::vector<uint16_t> resp = {0x000F, 0x8000, 0x8040, 0x8080, 0x80C0, 0x8100,
-                                                0x8140, 0x8180, 0x81C0, 0x8200, 0x8240, 0x8280,
-                                                0x82C0, 0x8300, 0x8340, 0x8380};
+            std::memset(k_.guestPtr(kRegion0), 0, kRegionSize);
+            std::memset(k_.guestPtr(kRegion1), 0, kRegionSize);
+            std::vector<uint16_t> resp = {15};
+            for (uint32_t off : kRegionOffsets)
+                resp.push_back(uint16_t(0x8000 + off / 2));
             pipe_.assign(reinterpret_cast<const uint8_t *>(resp.data()),
                          reinterpret_cast<const uint8_t *>(resp.data()) + resp.size() * 2);
             auto it = events_.find((2u << 8) | 2u);
@@ -298,11 +312,23 @@ class DspService : public Service {
                 k_.signalEvent(it->second);
                 if (!framesStarted_) {
                     framesStarted_ = true;
-                    k_.scheduleSignal(it->second, 4096000, 4096000);
+                    // One DSP frame (160 samples at 32728 Hz = 4.889 ms): the frame counter advances in both
+                    // regions (the engine skips its whole per-frame update while it reads zero) and the
+                    // interrupt fires.
+                    const Handle ev = it->second;
+                    k_.scheduleCallback(kFrameNs, kFrameNs, [this, ev] {
+                        uint32_t n = uint32_t(frameCounter_) + 1;
+                        frameCounter_ = uint16_t((n & 0xFFFF) ? n : 1); // never 0 again once started
+                        std::memcpy(k_.guestPtr(kRegion0), &frameCounter_, 2);
+                        std::memcpy(k_.guestPtr(kRegion1), &frameCounter_, 2);
+                        k_.signalEvent(ev);
+                    });
                 }
             }
         }
     }
+    static constexpr uint64_t kFrameNs = 4888889;
+    uint16_t frameCounter_ = 0;
     Kernel &k_;
     Handle sem_ = 0;
     bool framesStarted_ = false;

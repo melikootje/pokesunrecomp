@@ -44,6 +44,9 @@ uint32_t f32ToF24(float f) {
 }
 
 namespace {
+// Command buffers can chain (each ends by jumping to the next), so the call depth needs headroom; it is still
+// bounded.
+constexpr unsigned kMaxBufferDepth = 256;
 // Unpacks the 3-word float24 layout (also used by the fixed-attribute registers) into x, y, z, w.
 void unpackF24(const uint32_t w[3], Vec4 *out) {
     const uint32_t x = w[2] & 0xFFFFFF;
@@ -80,7 +83,25 @@ void Pica::writeRegister(uint32_t id, uint32_t value, uint32_t mask) {
     regs_[id] = (regs_[id] & ~bm) | (value & bm);
     const uint32_t v = regs_[id];
 
-    if (id == FINALIZE) {
+    if (id == CMDBUF_JUMP0 || id == CMDBUF_JUMP0 + 1) {
+        const uint32_t k = id - CMDBUF_JUMP0;
+        const uint32_t bytes = (regs_[CMDBUF_SIZE0 + k] & 0x1FFFFF) * 8;
+        uint32_t vaddr = 0;
+        if (value && depth_ < kMaxBufferDepth && bytes >= 8 &&
+            Gpu::physToVirt(regs_[CMDBUF_ADDR0 + k] * 8, &vaddr) && Gpu::accessible(vaddr, bytes)) {
+            stats_.bufferJumps++;
+            std::vector<uint32_t> w(bytes / 4);
+            std::memcpy(w.data(), mem_ + vaddr, bytes);
+            const bool outerFinalized = finalized_;
+            finalized_ = false;
+            runWords(w.data(), uint32_t(w.size()), depth_ + 1);
+            finalized_ = outerFinalized; // a finalize inside the nested buffer ends only that buffer
+        } else if (value) {
+            if (stats_.jumpsRejected++ < 5)
+                std::fprintf(stderr, "[pica] rejected buffer jump %u: size=%u bytes addr=%08x (depth %u)\n",
+                             k, bytes, regs_[CMDBUF_ADDR0 + k] * 8, depth_);
+        }
+    } else if (id == FINALIZE) {
         finalized_ = true;
     } else if (id == DRAWARRAYS || id == DRAWELEMENTS) {
         if (value)
@@ -145,6 +166,14 @@ void Pica::processCommandList(uint32_t vaddr, uint32_t bytes) {
     std::vector<uint32_t> w(n);
     std::memcpy(w.data(), mem_ + vaddr, n * 4);
     finalized_ = false;
+    runWords(w.data(), n, 0);
+}
+
+// Executes (value, header) command pairs. Nested buffers (CMDBUF_JUMP) run to their end before the caller
+// continues.
+void Pica::runWords(const uint32_t *w, uint32_t n, unsigned depth) {
+    const unsigned outerDepth = depth_;
+    depth_ = depth;
     for (uint32_t i = 0; i + 1 < n && !finalized_;) {
         const uint32_t param = w[i], header = w[i + 1];
         const uint32_t id = header & 0xFFFF, mask = (header >> 16) & 0xF, extra = (header >> 20) & 0xFF;
@@ -157,6 +186,7 @@ void Pica::processCommandList(uint32_t vaddr, uint32_t bytes) {
             used++; // commands are padded to 8 bytes
         i += used;
     }
+    depth_ = outerDepth;
 }
 
 // ---------------------------------------------------------------------------------------------- vertex stage
@@ -404,6 +434,8 @@ void Pica::draw(bool indexed) {
             ClipVertex cv;
             if (fetchVertex(idx[i], in) && runVertex(in, &cv)) {
                 it = cache.emplace(idx[i], cv).first;
+                if (vertexHook_)
+                    vertexHook_(count, i, in, cv);
             }
         }
         if (it != cache.end()) {

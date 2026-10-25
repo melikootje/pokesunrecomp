@@ -267,6 +267,53 @@ int main() {
         CHECK(at0.r == 255 && other.a == 0);
     }
 
+    // --- nested command buffers (CMDBUF_JUMP): the draw lives in a buffer the main list jumps to ---
+    {
+        Fx f;
+        Scene sc(16, 16);
+        sc.vertices(f, {{-1, -1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0},
+                        {1, -1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0},
+                        {-1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0}});
+        List nested; // the draw, ending in its own FINALIZE (which must end only this buffer)
+        nested.add(NUMVERTICES, 3);
+        nested.add(VERTEX_OFFSET, 0);
+        nested.add(PRIMITIVE_CONFIG, 0);
+        nested.add(DRAWARRAYS, 1);
+        nested.add(FINALIZE, 1);
+        const uint32_t nestedVirt = kVirtFcram + 0x180000, nestedPhys = kPhysFcram + 0x180000;
+        std::memcpy(f.gm.base() + nestedVirt, nested.w.data(), nested.w.size() * 4);
+        sc.l.add(CMDBUF_SIZE0, uint32_t(nested.w.size() * 4 / 8));
+        sc.l.add(CMDBUF_ADDR0, nestedPhys >> 3);
+        sc.l.add(CMDBUF_JUMP0, 1);
+        sc.l.add(0x130, 5); // runs after the nested buffer returned
+        sc.l.add(FINALIZE, 1);
+        f.run(sc.l);
+        CHECK(f.p().stats().bufferJumps == 1 && f.p().stats().draws == 1);
+        CHECK(f.px(kVirtVram, 16, 1, 1).r == 255);
+        CHECK(f.p().reg(0x130) == 5);
+
+        // a buffer address outside memory is refused and counted, not followed
+        Fx g;
+        List bad;
+        bad.add(CMDBUF_SIZE0, 4);
+        bad.add(CMDBUF_ADDR0, 0x10000000u >> 3);
+        bad.add(CMDBUF_JUMP0, 1);
+        bad.add(FINALIZE, 1);
+        g.run(bad);
+        CHECK(g.p().stats().bufferJumps == 0 && g.p().stats().jumpsRejected == 1);
+
+        // a buffer that jumps to itself stops at the nesting limit instead of recursing forever
+        Fx h;
+        List loop;
+        const uint32_t loopVirt = kVirtFcram + 0x190000, loopPhys = kPhysFcram + 0x190000;
+        loop.add(CMDBUF_SIZE0, 4);
+        loop.add(CMDBUF_ADDR0, loopPhys >> 3);
+        loop.add(CMDBUF_JUMP0, 1);
+        std::memcpy(h.gm.base() + loopVirt, loop.w.data(), loop.w.size() * 4);
+        h.run(loop);
+        CHECK(h.p().stats().bufferJumps <= 257 && h.p().stats().bufferJumps >= 100);
+    }
+
     // --- two triangles sharing an edge fill a quad exactly once (top-left rule, no gaps) ---
     {
         Fx f;

@@ -42,6 +42,7 @@ constexpr uint32_t kStackTop = 0x10000000,
                    kStackSize = 0x100000; // main thread stack (3DS: top of the app stack region)
 } // namespace
 
+namespace pokerecomp::pica {}
 int main(int argc, char **argv) {
     if (argc < 2) {
         std::fprintf(stderr, "usage: boot_probe <code.bin> [maxInsns] [lenient]\n");
@@ -395,6 +396,42 @@ int main(int argc, char **argv) {
             shown++;
         });
     }
+    if (const char *gx = std::getenv("PROBE_GXLOG_AFTER")) { // PROBE_GXLOG_AFTER=<insns>:<count>
+        static uint64_t from = 0, num = 0, shown = 0;
+        std::sscanf(gx, "%" SCNu64 ":%" SCNu64, &from, &num);
+        gpu->onGxCommand = [](uint32_t id, const uint32_t *w) {
+            if (g_progress < from || shown >= num)
+                return;
+            shown++;
+            std::printf("[gx@%" PRIu64 "M] cmd %u: %08x %08x %08x %08x %08x %08x %08x\n",
+                        g_progress / 1000000, id, w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+        };
+    }
+    if (const char *vx = std::getenv("PROBE_VTX")) { // PROBE_VTX=<insns>:<vertexCount>:<count>
+        static Gpu *vtxGpu;
+        vtxGpu = gpu.get();
+        static uint64_t from = 0, want = 0, num = 0, shown = 0;
+        std::sscanf(vx, "%" SCNu64 ":%" SCNu64 ":%" SCNu64, &from, &want, &num);
+        gpu->pica().setVertexHook([](uint32_t n, uint32_t i, const pica::Vec4 *in,
+                                     const pica::ClipVertex &cv) {
+            if (g_progress < from || n != want || shown >= num)
+                return;
+            shown++;
+            if (shown == 1) { // the shader's constants, entry point and the first words of its program
+                const pica::ShaderUnit &su = vtxGpu->pica().shader();
+                std::printf("[vtx shader] entry=%u\n", su.entry);
+                for (int c = 0; c < 96; c++)
+                    std::printf("[vtx c%02d] %g %g %g %g\n", c, su.fconst[c][0], su.fconst[c][1],
+                                su.fconst[c][2], su.fconst[c][3]);
+                for (int w = 0; w < 24; w++)
+                    std::printf("[vtx code %03u] %08x\n", unsigned(su.entry + w), su.code[su.entry + w]);
+            }
+            std::printf(
+                "[vtx n=%u i=%u] in0=(%g %g %g %g) in1=(%g %g %g %g) in2=(%g %g %g %g) clip=(%g %g %g %g)\n",
+                n, i, in[0][0], in[0][1], in[0][2], in[0][3], in[1][0], in[1][1], in[1][2], in[1][3],
+                in[2][0], in[2][1], in[2][2], in[2][3], cv.pos[0], cv.pos[1], cv.pos[2], cv.pos[3]);
+        });
+    }
     if (const char *da = std::getenv("PROBE_DRAWEND_AFTER")) { // PROBE_DRAWEND_AFTER=<insns>:<count>
         static uint64_t from = 0, num = 0, shown = 0;
         std::sscanf(da, "%" SCNu64 ":%" SCNu64, &from, &num);
@@ -517,11 +554,12 @@ int main(int argc, char **argv) {
     }
     {
         const pica::PicaStats &p = gpu->pica().stats();
-        std::printf("pica: lists=%" PRIu64 " regwrites=%" PRIu64 " draws=%" PRIu64 " skipped=%" PRIu64
-                    " tris=%" PRIu64 " culled=%" PRIu64 " clipped=%" PRIu64 " fragments=%" PRIu64
-                    " vsRuns=%" PRIu64 " vsFail=%" PRIu64 " badAddr=%" PRIu64 "\n",
-                    p.commandLists, p.regWrites, p.draws, p.drawsSkipped, p.triangles, p.culled, p.clipped,
-                    p.fragments, p.shaderRuns, p.shaderFailures, p.badAddress);
+        std::printf(
+            "pica: lists=%" PRIu64 " regwrites=%" PRIu64 " draws=%" PRIu64 " skipped=%" PRIu64
+            " tris=%" PRIu64 " culled=%" PRIu64 " clipped=%" PRIu64 " fragments=%" PRIu64 " vsRuns=%" PRIu64
+            " vsFail=%" PRIu64 " badAddr=%" PRIu64 " jumps=%" PRIu64 " jumpsRejected=%" PRIu64 "\n",
+            p.commandLists, p.regWrites, p.draws, p.drawsSkipped, p.triangles, p.culled, p.clipped,
+            p.fragments, p.shaderRuns, p.shaderFailures, p.badAddress, p.bufferJumps, p.jumpsRejected);
         std::printf("pica unsupported: lighting=%" PRIu64 " procTex=%" PRIu64 " fog=%" PRIu64
                     " shadow=%" PRIu64 " geoShader=%" PRIu64 " texFmt=%" PRIu64 " cube=%" PRIu64
                     " immediate=%" PRIu64 " logicOp=%" PRIu64 "\n",
@@ -533,6 +571,17 @@ int main(int argc, char **argv) {
         if (kv.second >= 3)
             std::printf("[pcsample] T%u pc=%08x x%" PRIu64 "\n", kv.first.first, kv.first.second & ~1u,
                         kv.second);
+    {
+        std::vector<std::pair<uint64_t, std::string>> top;
+        for (const auto &kv : kernel.ipcHistogram()) {
+            char b[96];
+            std::snprintf(b, sizeof b, "%s %08x", kv.first.first.c_str(), kv.first.second);
+            top.push_back({kv.second, b});
+        }
+        std::sort(top.rbegin(), top.rend());
+        for (size_t i = 0; i < top.size() && i < 40; i++)
+            std::printf("[ipc] %8" PRIu64 "  %s\n", top[i].first, top[i].second.c_str());
+    }
     static const char *names[] = {
         "all threads exited", "deadlock", "instruction limit", "process exit", "break", "trap", "fault"};
     std::printf("result: %s\n", names[int(rr)]);
@@ -545,6 +594,21 @@ int main(int argc, char **argv) {
     if (rr == RunResult::Break)
         std::printf("  svcBreak reason %u\n", kernel.breakReason());
 
+    if (const char *sc = std::getenv(
+            "PROBE_SCAN")) { // PROBE_SCAN=w0,w1,... (hex): guest addresses holding that word sequence
+        std::vector<uint32_t> pat;
+        for (const char *c = sc; *c;) {
+            char *e;
+            pat.push_back(uint32_t(std::strtoul(c, &e, 16)));
+            c = *e ? e + 1 : e;
+        }
+        unsigned found = 0;
+        for (uint64_t a = 0x00100000; a + pat.size() * 4 <= 0x50000000 && found < 40; a += 4)
+            if (!std::memcmp(gm.base() + a, pat.data(), pat.size() * 4)) {
+                std::printf("scan hit at %08x\n", unsigned(a));
+                found++;
+            }
+    }
     if (const char *w = std::getenv("PROBE_WORDS")) { // comma-separated guest addresses (hex) to print
         std::string list = w;
         size_t pos = 0;

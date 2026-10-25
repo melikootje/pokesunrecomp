@@ -22,6 +22,7 @@ struct PicaStats {
     uint64_t unsupportedLighting = 0, unsupportedProcTex = 0, unsupportedFog = 0, unsupportedShadow = 0,
              unsupportedGeometryShader = 0, unsupportedTexFormat = 0, unsupportedCube = 0, badAddress = 0,
              unsupportedImmediate = 0, unsupportedLogicOp = 0;
+    uint64_t bufferJumps = 0, jumpsRejected = 0; // nested command buffers executed / refused
 };
 
 // Interpolated vertex output slots.
@@ -76,6 +77,11 @@ class Pica {
     void setDrawEndLog(void (*fn)(void *, uint32_t, uint64_t, const float *, const float *)) {
         drawEndLog_ = fn;
     }
+    // Diagnostics: called for every vertex the shader processes, with (draw vertex count, index, inputs,
+    // output).
+    void setVertexHook(std::function<void(uint32_t, uint32_t, const Vec4 *, const ClipVertex &)> fn) {
+        vertexHook_ = std::move(fn);
+    }
     // Any number of observers, called after each draw with (vertex count, fragments, screen-space min, max).
     void addDrawEndHook(std::function<void(uint32_t, uint64_t, const float *, const float *)> fn) {
         drawEndHooks_.push_back(std::move(fn));
@@ -86,6 +92,7 @@ class Pica {
     }
 
   private:
+    void runWords(const uint32_t *w, uint32_t n, unsigned depth);
     void draw(bool indexed);
     bool prepareTarget();
     bool fetchVertex(uint32_t index, Vec4 in[16]);
@@ -104,6 +111,7 @@ class Pica {
     void *drawLogUser_ = nullptr;
     void (*drawEndLog_)(void *, uint32_t, uint64_t, const float *, const float *) = nullptr;
     std::vector<std::function<void(uint32_t, uint64_t, const float *, const float *)>> drawEndHooks_;
+    std::function<void(uint32_t, uint32_t, const Vec4 *, const ClipVertex &)> vertexHook_;
 
     // FIFO state
     uint32_t uniformIndex_ = 0, uniformWords_[4] = {}, uniformCount_ = 0;
@@ -112,6 +120,7 @@ class Pica {
     Vec4 fixedAttr_[12];
     bool finalized_ = false;
     bool rasterEnabled_ = true;
+    unsigned depth_ = 0; // nesting of command buffers being executed
 
     // state resolved at the start of a draw
     struct Fb {

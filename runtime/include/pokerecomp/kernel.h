@@ -100,6 +100,8 @@ class Kernel {
     void setLog(std::function<void(const std::string &)> f) { log_ = std::move(f); }
     const std::vector<std::string> &trace() const { return trace_; } // deterministic scheduling/SVC trace
     uint64_t ticks() const { return now_; }
+    // Number of requests per (service name, command header) over the whole run.
+    const std::map<std::pair<std::string, uint32_t>, uint64_t> &ipcHistogram() const { return ipcHist_; }
     const KernelStats &stats() const { return stats_; }
     uint32_t exitCode() const { return exitCode_; }
     uint32_t breakReason() const { return breakReason_; }
@@ -154,6 +156,7 @@ class Kernel {
     UnimplementedPolicy policy_ = UnimplementedPolicy::ReturnError;
     uint64_t now_ = 0;
     KernelStats stats_;
+    std::map<std::pair<std::string, uint32_t>, uint64_t> ipcHist_;
     uint32_t exitCode_ = 0, breakReason_ = 0;
     std::string stopMessage_;
     GuestFault fault_;
