@@ -25,6 +25,7 @@ struct PicaStats {
     uint64_t bufferJumps = 0, jumpsRejected = 0; // nested command buffers executed / refused
     // Float uniforms uploaded as NaN (a sign that the guest computed a bad matrix); where the first one came from.
     uint64_t nanUniforms = 0;
+    uint64_t texFormatDraws[3][16] = {}; // draws that sampled each texture format, per unit
     uint32_t firstNanList = 0, firstNanWord = 0, firstNanReg = 0;
     uint32_t lastNanList = 0, lastNanWord = 0, lastNanReg = 0;
 };
@@ -70,6 +71,8 @@ class Pica {
     void writeRegister(uint32_t id, uint32_t value, uint32_t mask = 0xF);
 
     uint32_t reg(uint32_t id) const { return regs_[id]; }
+    // Register file as it was at the latest draw that used fragment lighting (diagnostics).
+    const std::array<uint32_t, kNumRegs> &litSnapshot() const { return litSnapshot_; }
     const PicaStats &stats() const { return stats_; }
     PicaStats &mutableStats() { return stats_; }
     // When false, draws run the vertex stage and are counted but nothing is rasterized (fast-forwarding a
@@ -110,6 +113,7 @@ class Pica {
 
     uint8_t *mem_;
     std::array<uint32_t, kNumRegs> regs_;
+    std::array<uint32_t, kNumRegs> litSnapshot_{};
     ShaderUnit shader_;
     PicaStats stats_;
     void (*drawLog_)(void *, const std::string &) = nullptr;

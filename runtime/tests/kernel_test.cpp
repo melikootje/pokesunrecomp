@@ -238,6 +238,24 @@ int main() {
         CHECK(runProg(e, p) == RunResult::AllExited);
         CHECK(e.rd(kRes) == kresult::Success);
     }
+    // The shared page carries the console clock (2024-01-02 03:04:05.678 local) and the 3D slider.
+    {
+        Env e;
+        KernelConfig cfg;
+        cfg.startTimeMs = 1704164645678ull;
+        e.kernel.configure(cfg);
+        uint64_t ms, ticksPerSec, tickBase;
+        float slider;
+        std::memcpy(&ms, e.gm.base() + 0x1FF81020, 8);
+        std::memcpy(&tickBase, e.gm.base() + 0x1FF81028, 8);
+        std::memcpy(&ticksPerSec, e.gm.base() + 0x1FF81030, 8);
+        std::memcpy(&slider, e.gm.base() + 0x1FF81080, 4);
+        CHECK(ms == 1704164645678ull + 2208988800000ull);
+        CHECK(tickBase == 0 && ticksPerSec == kTicksPerSecond && slider == 0.0f);
+        uint64_t ms2;
+        std::memcpy(&ms2, e.gm.base() + 0x1FF81040, 8); // the alternate record is identical
+        CHECK(ms2 == ms);
+    }
     // 3. timeout on the virtual clock
     {
         Env e;

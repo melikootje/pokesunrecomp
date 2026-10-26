@@ -66,6 +66,9 @@ struct KernelConfig {
         1; // ExHeader system mode: 0 = 64 MB, 1 = 72 MB, 2 = 80 MB application memory (Old 3DS)
     uint8_t kernelMajor = 2, kernelMinor = 46, kernelRevision = 0; // reported kernel version
     uint32_t ctrSdkVersion = 0;
+    // Console clock at process start, in milliseconds since 1970-01-01 (local time as the console shows it).
+    // 0 = the host clock. Tests and reproducible runs set a fixed value.
+    uint64_t startTimeMs = 0;
 };
 constexpr uint32_t kConfigPage = 0x1FF80000;
 

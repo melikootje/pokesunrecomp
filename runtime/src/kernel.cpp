@@ -1,9 +1,11 @@
 #include "pokerecomp/kernel.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <set>
 
 namespace pokerecomp {
@@ -625,6 +627,33 @@ void Kernel::configure(const KernelConfig &cfg) {
     w32(0x40, appMemorySize(cfg.appMemType)); // APPMEMALLOC
     w32(0x44, 0x02C00000);                    // SYSMEMALLOC (approximate)
     w32(0x48, 0x01400000);                    // BASEMEMALLOC (approximate)
+    // Shared page (0x1FF81000): a counter selects one of two alternating clock records (0x20 and 0x40)
+    // holding {ms since 1900, system tick of that moment, ticks per second, tick offset} (layout as read by
+    // the game's clock code); 0x80 is the 3D slider (float), 0x84 the 3D LED.
+    {
+        uint64_t unixMs = cfg.startTimeMs;
+        if (!unixMs) {
+            const auto now = std::chrono::system_clock::now();
+            unixMs = uint64_t(
+                std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
+            const std::time_t tt = std::time_t(unixMs / 1000);
+            std::tm lt{};
+            localtime_r(&tt, &lt);
+            unixMs += uint64_t(int64_t(lt.tm_gmtoff) * 1000);
+        }
+        uint8_t *shared = gm_.base() + 0x1FF81000;
+        auto w64s = [&](uint32_t off, uint64_t v) { std::memcpy(shared + off, &v, 8); };
+        const uint32_t zero = 0;
+        std::memcpy(shared, &zero, 4); // counter
+        for (uint32_t rec = 0x20; rec <= 0x40; rec += 0x20) {
+            w64s(rec + 0x00, unixMs + 2208988800000ull);
+            w64s(rec + 0x08, 0);
+            w64s(rec + 0x10, kTicksPerSecond);
+            w64s(rec + 0x18, 0);
+        }
+        const float slider = 0.0f;
+        std::memcpy(shared + 0x80, &slider, 4);
+    }
     w32(0x60, uint32_t(cfg.kernelRevision) | uint32_t(cfg.kernelMinor) << 8 |
                   uint32_t(cfg.kernelMajor) << 16); // FIRM_VERSIONREVISION
 }

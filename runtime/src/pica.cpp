@@ -406,8 +406,10 @@ void Pica::draw(bool indexed) {
     depthScale_ = regF24(regs_[DEPTHMAP_SCALE]);
     depthOffset_ = regF24(regs_[DEPTHMAP_OFFSET]);
     prepareTextures();
-    if (regs_[0x08F] & 1)
+    if (regs_[0x08F] & 1) {
         stats_.unsupportedLighting++;
+        litSnapshot_ = regs_;
+    }
     if (regs_[TEXENV_UPDATE_BUFFER] & 7)
         stats_.unsupportedFog++;
     if ((regs_[COLOR_OPERATION] & 3) == 3)

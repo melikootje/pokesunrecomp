@@ -572,6 +572,13 @@ int main(int argc, char **argv) {
             " vsFail=%" PRIu64 " badAddr=%" PRIu64 " jumps=%" PRIu64 " jumpsRejected=%" PRIu64 "\n",
             p.commandLists, p.regWrites, p.draws, p.drawsSkipped, p.triangles, p.culled, p.clipped,
             p.fragments, p.shaderRuns, p.shaderFailures, p.badAddress, p.bufferJumps, p.jumpsRejected);
+        for (int u = 0; u < 3; u++) {
+            std::printf("pica tex unit %d formats:", u);
+            for (int f = 0; f < 16; f++)
+                if (p.texFormatDraws[u][f])
+                    std::printf(" %d:%" PRIu64, f, p.texFormatDraws[u][f]);
+            std::printf("\n");
+        }
         std::printf("pica nan uniforms=%" PRIu64 " first: list %08x word %u uniform %u\n", p.nanUniforms,
                     p.firstNanList, p.firstNanWord, p.firstNanReg);
         std::printf("pica unsupported: lighting=%" PRIu64 " procTex=%" PRIu64 " fog=%" PRIu64
@@ -625,6 +632,19 @@ int main(int argc, char **argv) {
                 std::printf("scan hit at %08x\n", unsigned(a));
                 found++;
             }
+    }
+    if (const char *lg = std::getenv("PROBE_LITREGS")) { // like PROBE_REGS, at the latest lit draw
+        for (const char *c = lg; *c;) {
+            unsigned lo = 0, hi = 0;
+            int n = 0;
+            if (std::sscanf(c, "%x-%x%n", &lo, &hi, &n) < 2)
+                break;
+            for (unsigned r = lo; r <= hi && r < 0x300; r++)
+                std::printf("[litreg %03x] %08x\n", r, gpu->pica().litSnapshot()[r]);
+            c += n;
+            if (*c == ',')
+                c++;
+        }
     }
     if (const char *rg =
             std::getenv("PROBE_REGS")) { // PROBE_REGS=<hexLo>-<hexHi>[,..]: final PICA register values
