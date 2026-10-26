@@ -302,6 +302,32 @@ int main(int argc, char **argv) {
             st.bboxMax[0] = st.bboxMax[1] = -1e30f;
         };
     }
+    if (const char *td = std::getenv("PROBE_TEXDUMP")) { // PROBE_TEXDUMP=<dir>:<afterInsns>:<count>
+        static std::string dir;
+        static uint64_t from = 0, num = 0, shown = 0;
+        char d[300] = {};
+        std::sscanf(td, "%299[^:]:%" SCNu64 ":%" SCNu64, d, &from, &num);
+        dir = d;
+        gpu->pica().setTextureHook([](int unit, const pica::TexInfo &t, uint32_t env0) {
+            if (g_progress < from || shown >= num || t.width > 512 || t.height > 512)
+                return;
+            std::vector<uint8_t> img(size_t(t.width) * t.height * 4);
+            for (unsigned y = 0; y < t.height; y++)
+                for (unsigned x = 0; x < t.width; x++) {
+                    float c[4];
+                    if (!pica::fetchTexel(t, int(x), int(t.height - 1 - y), c))
+                        return;
+                    for (int k = 0; k < 4; k++)
+                        img[(size_t(y) * t.width + x) * 4 + k] =
+                            uint8_t(std::min(1.0f, c[k]) * 255.0f + 0.5f);
+                }
+            char name[200];
+            std::snprintf(name, sizeof name, "%s/tex_%04" PRIu64 "_u%d_fmt%u_%ux%u_env%08x.png", dir.c_str(),
+                          shown, unit, t.format, t.width, t.height, env0);
+            probe::writePng(name, t.width, t.height, img);
+            shown++;
+        });
+    }
     if (const char *dsa = std::getenv("PROBE_DRAWSUM_AFTER")) { // PROBE_DRAWSUM_AFTER=<insns>:<count>
         static uint64_t from = 0, num = 0, shown = 0;
         std::sscanf(dsa, "%" SCNu64 ":%" SCNu64, &from, &num);

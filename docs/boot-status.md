@@ -98,3 +98,17 @@ implemented, or a combiner source); `OpenFileDirectly` on archive `0x2345678A` (
 `00010302 000400db ffffff00 00000001`, 20-byte zero file path) is answered "file not found" and the game carries
 on; the display transfer `1f180000 -> 1f480000, 128x256, flags 0x02000020` (2x2 downscale with equal in/out
 dimensions) is rejected about 2,000 times.
+
+## Resolved: magenta 3D scenes (downscaling display transfer)
+
+The bedroom scene was tinted magenta. Per-draw render-target dumps (`PROBE_RT_SEQ`) showed the picture was right
+until the last three additive full-screen passes of the game's bloom chain. Those sample a 64x128 texture at VRAM
+`0x18480000` that the game produces with a display transfer (`1f180000 -> 1f480000`, input `128x256`, flags
+`0x02000020` = 2x2 downscale) whose *output dimensions equal the input dimensions*. We rejected such transfers
+(output too large for the scaled source), so the texture kept stale memory, which was added three times.
+Fix: when the output size cannot fit the scaled source it is taken as the source footprint (so the result is the
+half-size image). Test: `gpu_test`. The scene now renders in natural colours.
+
+Diagnostics added on the way: `PROBE_TEXDUMP=dir:after:count` (decoded textures of draws as PNG),
+`PROBE_LITREGS` (register file at the latest lit draw), a texture-format histogram, `PROBE_RECENT_IPC`, and combiner
+constants in the draw summary.

@@ -86,6 +86,9 @@ class Pica {
     }
     // Diagnostics: called for every vertex the shader processes, with (draw vertex count, index, inputs,
     // output).
+    // Diagnostics: called for every enabled texture unit at the start of each draw (unit, texture, draw's TEV
+    // stage 0 source word).
+    void setTextureHook(std::function<void(int, const TexInfo &, uint32_t)> fn) { texHook_ = std::move(fn); }
     void setVertexHook(std::function<void(uint32_t, uint32_t, const Vec4 *, const ClipVertex &)> fn) {
         vertexHook_ = std::move(fn);
     }
@@ -114,6 +117,7 @@ class Pica {
     uint8_t *mem_;
     std::array<uint32_t, kNumRegs> regs_;
     std::array<uint32_t, kNumRegs> litSnapshot_{};
+    std::function<void(int, const TexInfo &, uint32_t)> texHook_;
     ShaderUnit shader_;
     PicaStats stats_;
     void (*drawLog_)(void *, const std::string &) = nullptr;

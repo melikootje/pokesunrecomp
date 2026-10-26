@@ -166,6 +166,8 @@ void Pica::prepareTextures() {
             stats_.badAddress++;
             texEnabled_[u] = false;
         }
+        if (texHook_ && t.data)
+            texHook_(u, t, regs_[TEXENV0]);
     }
 }
 
@@ -363,9 +365,6 @@ void Pica::fragment(int x, int y, float depth, const float *attr) {
     // --- texturing and the TEV combiner chain ---
     Color primary = {clamp01(attr[kColor]), clamp01(attr[kColor + 1]), clamp01(attr[kColor + 2]),
                      clamp01(attr[kColor + 3])};
-    static const bool allWhite = std::getenv("PICA_PRIMARY_WHITE") != nullptr; // experiment
-    if (allWhite)
-        primary = {1, 1, 1, 1};
     Color tex[4];
     for (int u = 0; u < 3; u++) {
         if (!texEnabled_[u])
@@ -386,9 +385,6 @@ void Pica::fragment(int x, int y, float depth, const float *attr) {
         if (sampleTexture(tex_[u], uv[0], uv[1], c))
             tex[u] = {c[0], c[1], c[2], c[3]};
     }
-    static const char *dbgTex1 = std::getenv("PICA_DBG_TEX1"); // experiment: "black" / "white"
-    if (dbgTex1 && texEnabled_[1])
-        tex[1] = dbgTex1[0] == 'b' ? Color{0, 0, 0, 1} : Color{1, 1, 1, 1};
     static const uint32_t kStage[6] = {TEXENV0, TEXENV1, TEXENV2, TEXENV3, TEXENV4, TEXENV5};
     Color prev = primary, buffer = fromRgba8(regs_[TEXENV_BUFFER_COLOR]);
     const uint32_t upd = regs_[TEXENV_UPDATE_BUFFER];

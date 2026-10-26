@@ -136,6 +136,10 @@ int main() {
             const Rgba d = decodePixel(f.at(kHeap + 0x4000 + (1 * 8 + 3) * 4), PixFmt::RGBA8);
             CHECK(d.r == (6 + 7 + 6 + 7) / 4 && d.g == (2 + 2 + 3 + 3) / 4);
         }
+        // The game programs a downscale with output dimensions equal to the input's (bloom chain): the
+        // result is the same half-size image.
+        CHECK(f.gpu.displayTransfer(kHeap + 0x1000, kHeap + 0x5000, 8 << 16 | 16, 8 << 16 | 16, 2 << 24));
+        CHECK(std::memcmp(f.at(kHeap + 0x4000), f.at(kHeap + 0x5000), 8 * 4 * 4) == 0);
         // 32x32 block layout round-trips too.
         std::vector<uint8_t> big(32 * 32 * 4);
         for (unsigned i = 0; i < 32 * 32; i++)

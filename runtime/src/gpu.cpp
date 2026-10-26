@@ -143,6 +143,17 @@ bool Gpu::displayTransfer(uint32_t src, uint32_t dst, uint32_t inDim, uint32_t o
     }
     const PixFmt inFmt = PixFmt(inFmtV), outFmt = PixFmt(outFmtV);
     const unsigned sx = scale ? 2 : 1, sy = scale == 2 ? 2 : 1; // source pixels per output pixel
+    // Seen in the game (the bloom chain): a 2x2 downscale of a 128x256 target is programmed with output
+    // dimensions equal to the input's, and the destination texture is then used as 64x128. When the output
+    // size cannot fit the scaled source, it is taken as the source footprint.
+    if (outW * sx > inW || outH * sy > inH) {
+        outW /= sx;
+        outH /= sy;
+        if (!outW || !outH) {
+            stats_.rejected++;
+            return false;
+        }
+    }
     // Both sides are laid out in `width` pixels per row (tiled sides in 8x8 or 32x32 blocks of that width).
     const bool inTiled = !linearToTiled || tiledToTiled, outTiled = linearToTiled || tiledToTiled;
     if (outW * sx > inW || outH * sy > inH) {

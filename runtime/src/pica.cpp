@@ -523,7 +523,13 @@ std::string drawSummary(const uint32_t *regs) {
         regs[VSH_ATTR_PERM_LOW], regs[VSH_ATTR_PERM_HIGH], regs[VSH_OUTMAP_MASK], regs[OUTMAP_TOTAL],
         regs[OUTMAP_O0], regs[OUTMAP_O0 + 1], regs[OUTMAP_O0 + 2], regs[VSH_ENTRYPOINT], regs[TEXUNIT0_DIM],
         regs[TEXUNIT0_PARAM], regs[TEXUNIT0_ADDR], regs[TEXUNIT0_TYPE]);
-    return std::string(b) + b3 + b2;
+    char b4[300];
+    std::snprintf(
+        b4, sizeof b4,
+        " | tev0 const=%08x scale=%08x | tev1 %08x/%08x/%08x const=%08x scale=%08x | buf=%08x upd=%08x",
+        regs[TEXENV0 + 3], regs[TEXENV0 + 4], regs[TEXENV1], regs[TEXENV1 + 1], regs[TEXENV1 + 2],
+        regs[TEXENV1 + 3], regs[TEXENV1 + 4], regs[TEXENV_BUFFER_COLOR], regs[TEXENV_UPDATE_BUFFER]);
+    return std::string(b) + b3 + b2 + b4;
 }
 
 } // namespace pica
