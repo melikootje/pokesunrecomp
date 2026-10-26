@@ -170,6 +170,30 @@ int main() {
     for (float f : {1.5f, -3.25f, 100.0f, 0.001953125f})
         CHECK(f24ToF32(f32ToF24(f)) == f);
 
+    // --- fragment lighting: one directional light, global ambient, quaternion-derived normal ---
+    {
+        Fx f;
+        auto c10 = [](unsigned r, unsigned g, unsigned b) { return uint32_t(r << 20 | g << 10 | b); };
+        f.p().writeRegister(0x1C0, c10(26, 26, 26));        // global ambient
+        f.p().writeRegister(0x1C2, 0);                      // one light
+        f.p().writeRegister(0x140 + 4, 0);                  // light vector x = y = 0
+        f.p().writeRegister(0x140 + 5, 0x3C00);             // z = 1.0 (float16)
+        f.p().writeRegister(0x140 + 9, 1);                  // directional
+        f.p().writeRegister(0x140 + 2, c10(100, 100, 100)); // diffuse
+        f.p().writeRegister(0x140 + 3, c10(10, 10, 10));    // ambient
+        float attr[kNumSlots] = {};
+        float out[6];
+        attr[kNormQuat + 3] = 1.0f; // identity quaternion: normal (0, 0, 1), facing the light
+        f.p().shadeLighting(attr, out);
+        CHECK(std::fabs(out[0] - 136.0f / 255.0f) < 1e-5f && out[0] == out[1] && out[1] == out[2]);
+        attr[kNormQuat] = 1.0f; // 180 degrees about x: normal (0, 0, -1), facing away
+        attr[kNormQuat + 3] = 0.0f;
+        f.p().shadeLighting(attr, out);
+        CHECK(std::fabs(out[0] - 36.0f / 255.0f) < 1e-5f); // only ambient terms remain
+        f.p().writeRegister(0x140 + 9, 3);                 // two-sided diffuse lights the back as well
+        f.p().shadeLighting(attr, out);
+        CHECK(std::fabs(out[0] - 136.0f / 255.0f) < 1e-5f);
+    }
     // --- command list parsing: masks, consecutive/same-register writes, padding, finalize ---
     {
         Fx f;
@@ -267,14 +291,15 @@ int main() {
         CHECK(at0.r == 255 && other.a == 0);
     }
 
-    // --- nested command buffers (CMDBUF_JUMP): the draw lives in a buffer the main list jumps to ---
+    // --- command buffer jumps (CMDBUF_JUMP): the draw lives in a buffer the main list jumps to; a jump
+    // replaces the running list, the processor does not come back ---
     {
         Fx f;
         Scene sc(16, 16);
         sc.vertices(f, {{-1, -1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0},
                         {1, -1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0},
                         {-1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0}});
-        List nested; // the draw, ending in its own FINALIZE (which must end only this buffer)
+        List nested; // the draw, ending in its own FINALIZE
         nested.add(NUMVERTICES, 3);
         nested.add(VERTEX_OFFSET, 0);
         nested.add(PRIMITIVE_CONFIG, 0);
@@ -285,12 +310,12 @@ int main() {
         sc.l.add(CMDBUF_SIZE0, uint32_t(nested.w.size() * 4 / 8));
         sc.l.add(CMDBUF_ADDR0, nestedPhys >> 3);
         sc.l.add(CMDBUF_JUMP0, 1);
-        sc.l.add(0x130, 5); // runs after the nested buffer returned
+        sc.l.add(0x130, 5); // after the jump: never executed
         sc.l.add(FINALIZE, 1);
         f.run(sc.l);
         CHECK(f.p().stats().bufferJumps == 1 && f.p().stats().draws == 1);
         CHECK(f.px(kVirtVram, 16, 1, 1).r == 255);
-        CHECK(f.p().reg(0x130) == 5);
+        CHECK(f.p().reg(0x130) == 0);
 
         // a buffer address outside memory is refused and counted, not followed
         Fx g;
@@ -302,7 +327,7 @@ int main() {
         g.run(bad);
         CHECK(g.p().stats().bufferJumps == 0 && g.p().stats().jumpsRejected == 1);
 
-        // a buffer that jumps to itself stops at the nesting limit instead of recursing forever
+        // a buffer that jumps to itself is cut off after a bounded number of jumps
         Fx h;
         List loop;
         const uint32_t loopVirt = kVirtFcram + 0x190000, loopPhys = kPhysFcram + 0x190000;
@@ -311,7 +336,29 @@ int main() {
         loop.add(CMDBUF_JUMP0, 1);
         std::memcpy(h.gm.base() + loopVirt, loop.w.data(), loop.w.size() * 4);
         h.run(loop);
-        CHECK(h.p().stats().bufferJumps <= 257 && h.p().stats().bufferJumps >= 100);
+        CHECK(h.p().stats().bufferJumps == 4096 && h.p().stats().jumpsRejected == 1);
+
+        // a chain of buffers (each jumping to the next) runs to its end however long it is
+        Fx k;
+        List chain;
+        constexpr unsigned kLinks = 1000;
+        for (unsigned i = 0; i < kLinks; i++) {
+            List link;
+            if (i + 1 < kLinks) {
+                link.add(CMDBUF_SIZE0, 4);
+                link.add(CMDBUF_ADDR0, (kPhysFcram + 0x1A0000 + (i + 1) * 0x40) >> 3);
+                link.add(CMDBUF_JUMP0, 1);
+            } else {
+                link.add(0x130, 0x77);
+                link.add(FINALIZE, 1);
+            }
+            std::memcpy(k.gm.base() + kVirtFcram + 0x1A0000 + i * 0x40, link.w.data(), link.w.size() * 4);
+        }
+        chain.add(CMDBUF_SIZE0, 4);
+        chain.add(CMDBUF_ADDR0, (kPhysFcram + 0x1A0000) >> 3);
+        chain.add(CMDBUF_JUMP0, 1);
+        k.run(chain);
+        CHECK(k.p().reg(0x130) == 0x77 && k.p().stats().bufferJumps == kLinks);
     }
 
     // --- two triangles sharing an edge fill a quad exactly once (top-left rule, no gaps) ---

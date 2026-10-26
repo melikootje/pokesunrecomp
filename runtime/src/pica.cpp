@@ -46,7 +46,7 @@ uint32_t f32ToF24(float f) {
 namespace {
 // Command buffers can chain (each ends by jumping to the next), so the call depth needs headroom; it is still
 // bounded.
-constexpr unsigned kMaxBufferDepth = 256;
+constexpr unsigned kMaxBufferJumps = 4096;
 // Unpacks the 3-word float24 layout (also used by the fixed-attribute registers) into x, y, z, w.
 void unpackF24(const uint32_t w[3], Vec4 *out) {
     const uint32_t x = w[2] & 0xFFFFFF;
@@ -84,22 +84,19 @@ void Pica::writeRegister(uint32_t id, uint32_t value, uint32_t mask) {
     const uint32_t v = regs_[id];
 
     if (id == CMDBUF_JUMP0 || id == CMDBUF_JUMP0 + 1) {
+        // A jump replaces the list being executed (the processor does not come back to the old one).
         const uint32_t k = id - CMDBUF_JUMP0;
         const uint32_t bytes = (regs_[CMDBUF_SIZE0 + k] & 0x1FFFFF) * 8;
         uint32_t vaddr = 0;
-        if (value && depth_ < kMaxBufferDepth && bytes >= 8 &&
-            Gpu::physToVirt(regs_[CMDBUF_ADDR0 + k] * 8, &vaddr) && Gpu::accessible(vaddr, bytes)) {
-            stats_.bufferJumps++;
-            std::vector<uint32_t> w(bytes / 4);
-            std::memcpy(w.data(), mem_ + vaddr, bytes);
-            const bool outerFinalized = finalized_;
-            finalized_ = false;
-            runWords(w.data(), uint32_t(w.size()), depth_ + 1, vaddr);
-            finalized_ = outerFinalized; // a finalize inside the nested buffer ends only that buffer
+        if (value && bytes >= 8 && Gpu::physToVirt(regs_[CMDBUF_ADDR0 + k] * 8, &vaddr) &&
+            Gpu::accessible(vaddr, bytes)) {
+            jumpPending_ = true;
+            jumpVaddr_ = vaddr;
+            jumpBytes_ = bytes;
         } else if (value) {
             if (stats_.jumpsRejected++ < 5)
-                std::fprintf(stderr, "[pica] rejected buffer jump %u: size=%u bytes addr=%08x (depth %u)\n",
-                             k, bytes, regs_[CMDBUF_ADDR0 + k] * 8, depth_);
+                std::fprintf(stderr, "[pica] rejected buffer jump %u: size=%u bytes addr=%08x\n", k, bytes,
+                             regs_[CMDBUF_ADDR0 + k] * 8);
         }
     } else if (id == FINALIZE) {
         finalized_ = true;
@@ -176,35 +173,45 @@ void Pica::processCommandList(uint32_t vaddr, uint32_t bytes) {
     stats_.commandLists++;
     if (bytes < 8 || !Gpu::accessible(vaddr, bytes))
         return;
-    const uint32_t n = bytes / 4;
-    std::vector<uint32_t> w(n);
-    std::memcpy(w.data(), mem_ + vaddr, n * 4);
     finalized_ = false;
-    runWords(w.data(), n, 0, vaddr);
+    jumpPending_ = false;
+    std::vector<uint32_t> w(bytes / 4);
+    std::memcpy(w.data(), mem_ + vaddr, bytes);
+    unsigned jumps = 0;
+    for (;;) {
+        runWords(w.data(), uint32_t(w.size()), vaddr);
+        if (finalized_ || !jumpPending_)
+            break;
+        // A list that keeps jumping around (real lists end in FINALIZE) is cut off instead of spinning.
+        if (++jumps > kMaxBufferJumps) {
+            stats_.jumpsRejected++;
+            break;
+        }
+        stats_.bufferJumps++;
+        vaddr = jumpVaddr_;
+        w.resize(jumpBytes_ / 4);
+        std::memcpy(w.data(), mem_ + vaddr, jumpBytes_);
+        jumpPending_ = false;
+    }
+    jumpPending_ = false;
 }
 
-// Executes (value, header) command pairs. Nested buffers (CMDBUF_JUMP) run to their end before the caller
-// continues.
-void Pica::runWords(const uint32_t *w, uint32_t n, unsigned depth, uint32_t srcVaddr) {
-    const unsigned outerDepth = depth_;
-    const uint32_t outerList = listVaddr_;
+// Executes (value, header) command pairs until the list ends, FINALIZE, or a buffer jump is triggered.
+void Pica::runWords(const uint32_t *w, uint32_t n, uint32_t srcVaddr) {
     listVaddr_ = srcVaddr;
-    depth_ = depth;
-    for (uint32_t i = 0; i + 1 < n && !finalized_;) {
+    for (uint32_t i = 0; i + 1 < n && !finalized_ && !jumpPending_;) {
         const uint32_t param = w[i], header = w[i + 1];
         const uint32_t id = header & 0xFFFF, mask = (header >> 16) & 0xF, extra = (header >> 20) & 0xFF;
         const bool consecutive = header >> 31;
         listWord_ = i;
         writeRegister(id, param, mask);
-        for (uint32_t e = 0; e < extra && i + 2 + e < n && !finalized_; e++)
+        for (uint32_t e = 0; e < extra && i + 2 + e < n && !finalized_ && !jumpPending_; e++)
             writeRegister(consecutive ? id + 1 + e : id, w[i + 2 + e], mask);
         uint32_t used = 2 + extra;
         if (used & 1)
             used++; // commands are padded to 8 bytes
         i += used;
     }
-    depth_ = outerDepth;
-    listVaddr_ = outerList;
 }
 
 // ---------------------------------------------------------------------------------------------- vertex stage

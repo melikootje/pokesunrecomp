@@ -37,6 +37,22 @@ correctly in the game's own font, so the following were each confirmed by a wron
 - **4-bit textures** (I4, A4): the even pixel is the low nibble (the opposite order turns the font atlas to noise).
 - **Addresses** are physical (see above); vertex data, textures and targets all resolve.
 
+## More facts confirmed by the real game
+- **A command-buffer jump replaces the running list** (`CMDBUF_SIZE/ADDR/JUMP` 0x238-0x23D): processing continues in
+  the target and never returns. Treating it as a call (and capping the depth) dropped the tail of long jump chains,
+  so characters were missing from cutscenes (they showed as the 0x4d4d4d clear colour); with jump semantics ~75,000
+  more draws run in the first 4 G instructions and Lillie / Type: Null render. FINALIZE ends the whole list.
+- **Display transfer with a 2x2 downscale may carry output dimensions equal to the input's** (bloom chain); the
+  output is then the half-size image.
+- **An enabled memory-fill unit with an empty range** is a no-op, not an error.
+- **Fragment lighting (partial):** `0x08F` bit 0 enables it; light `n` lives at `0x140 + 0x10 n` (vector as float16
+  at +4/+5, diffuse +2, ambient +3, config +9 bit 0 = directional, bit 1 = two-sided); global ambient `0x1C0`; light
+  count `0x1C2`; colours are three 10-bit fields in 1/255 units. Modelled: normal from the interpolated quaternion,
+  `global ambient + sum(ambient + diffuse * max(N.L, 0))` as the fragment primary colour (TEV source 1); source 0 is
+  the vertex colour. Not modelled: spot cones, distance attenuation, the specular/fresnel/reflection look-up tables
+  (secondary colour stays 0), bump mapping. The register offsets come from public documentation and the register
+  state the game writes; visual confirmation is limited to scenes that use only ambient/diffuse terms.
+
 ## Assumptions still unconfirmed
 - Depth: `d = z/w * scale + offset`, clamped to [0, 1]; only the near plane is clipped (`z >= -w`).
 - Face culling: 1 keeps clockwise, 2 keeps counter-clockwise (screen space, y up). The game's draws use none so far.
@@ -44,7 +60,7 @@ correctly in the game's own font, so the following were each confirmed by a wron
 - Mipmapping is ignored (level 0 only); bilinear filtering is used when the magnification filter says so.
 
 ## Not implemented (counted in `PicaStats::unsupported*` and printed by `boot_probe`)
-Fragment lighting, fog, procedural textures, gas/shadow modes, cube/projection/shadow textures, geometry shaders
+Fragment lighting beyond ambient + diffuse, fog, procedural textures, gas/shadow modes, cube/projection/shadow textures, geometry shaders
 and immediate-mode vertices, mipmapping, logic ops other than copy, `LITP`, the 16-bit float24 mantissa in shaders.
 
 ## Performance

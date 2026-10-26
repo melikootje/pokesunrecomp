@@ -352,6 +352,78 @@ float blendEq(unsigned eq, float s, float d) {
 
 } // namespace
 
+namespace {
+float halfToFloat(uint32_t h) {
+    const uint32_t sign = (h >> 15) & 1, exp = (h >> 10) & 0x1F, man = h & 0x3FF;
+    float v;
+    if (exp == 0)
+        v = std::ldexp(float(man), -24);
+    else if (exp == 31)
+        v = man ? std::nanf("") : INFINITY;
+    else
+        v = std::ldexp(float(man | 0x400), int(exp) - 25);
+    return sign ? -v : v;
+}
+// Light colours are three 10-bit fields (b, g, r from the low bits) in units of 1/255.
+void color10(uint32_t v, float c[3]) {
+    c[0] = float((v >> 20) & 0x3FF) / 255.0f;
+    c[1] = float((v >> 10) & 0x3FF) / 255.0f;
+    c[2] = float(v & 0x3FF) / 255.0f;
+}
+} // namespace
+
+// Lighting model (3dbrew GPU registers, evidence in docs/gpu.md): the normal comes from the interpolated
+// quaternion, each enabled light adds ambient + diffuse * max(N.L, 0) to the primary colour on top of the
+// global ambient colour. Spot cones, distance attenuation, the specular and fresnel look-up tables and bump
+// mapping are not modelled yet.
+void Pica::shadeLighting(const float *attr, float out[6]) const {
+    float qx = attr[kNormQuat], qy = attr[kNormQuat + 1], qz = attr[kNormQuat + 2], qw = attr[kNormQuat + 3];
+    const float qn = std::sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+    if (qn > 1e-6f) {
+        qx /= qn;
+        qy /= qn;
+        qz /= qn;
+        qw /= qn;
+    } else {
+        qx = qy = qz = 0;
+        qw = 1;
+    }
+    // N = q * (0, 0, 1) * q^-1
+    const float nx = 2 * (qx * qz + qw * qy), ny = 2 * (qy * qz - qw * qx), nz = 1 - 2 * (qx * qx + qy * qy);
+    float rgb[3];
+    color10(regs_[0x1C0], rgb);
+    const unsigned numLights = (regs_[0x1C2] & 7) + 1;
+    for (unsigned i = 0; i < numLights; i++) {
+        const unsigned num = (regs_[0x1D9] >> (4 * i)) & 7;
+        const uint32_t base = 0x140 + 0x10 * num;
+        float lx = halfToFloat(regs_[base + 4] & 0xFFFF), ly = halfToFloat(regs_[base + 4] >> 16),
+              lz = halfToFloat(regs_[base + 5] & 0xFFFF);
+        if (!(regs_[base + 9] &
+              1)) { // positional light: the vector is the light position relative to the eye
+            lx += attr[kView];
+            ly += attr[kView + 1];
+            lz += attr[kView + 2];
+        }
+        const float ln = std::sqrt(lx * lx + ly * ly + lz * lz);
+        if (ln > 1e-6f) {
+            lx /= ln;
+            ly /= ln;
+            lz /= ln;
+        }
+        float dot = nx * lx + ny * ly + nz * lz;
+        dot = (regs_[base + 9] & 2) ? std::fabs(dot) : std::max(dot, 0.0f); // bit 1: two-sided diffuse
+        float diffuse[3], ambient[3];
+        color10(regs_[base + 2], diffuse);
+        color10(regs_[base + 3], ambient);
+        for (int c = 0; c < 3; c++)
+            rgb[c] += ambient[c] + diffuse[c] * dot;
+    }
+    for (int c = 0; c < 3; c++) {
+        out[c] = std::clamp(rgb[c], 0.0f, 1.0f);
+        out[3 + c] = 0.0f;
+    }
+}
+
 void Pica::fragment(int x, int y, float depth, const float *attr) {
     stats_.fragments++;
     const uint32_t stride = (fb_.width + 7) & ~7u;
@@ -365,6 +437,13 @@ void Pica::fragment(int x, int y, float depth, const float *attr) {
     // --- texturing and the TEV combiner chain ---
     Color primary = {clamp01(attr[kColor]), clamp01(attr[kColor + 1]), clamp01(attr[kColor + 2]),
                      clamp01(attr[kColor + 3])};
+    Color fragPrimary = primary, fragSecondary = {0, 0, 0, 1};
+    if (regs_[0x08F] & 1) {
+        float lit[6];
+        shadeLighting(attr, lit);
+        fragPrimary = {lit[0], lit[1], lit[2], 1.0f};
+        fragSecondary = {lit[3], lit[4], lit[5], 1.0f};
+    }
     Color tex[4];
     for (int u = 0; u < 3; u++) {
         if (!texEnabled_[u])
@@ -386,7 +465,7 @@ void Pica::fragment(int x, int y, float depth, const float *attr) {
             tex[u] = {c[0], c[1], c[2], c[3]};
     }
     static const uint32_t kStage[6] = {TEXENV0, TEXENV1, TEXENV2, TEXENV3, TEXENV4, TEXENV5};
-    Color prev = primary, buffer = fromRgba8(regs_[TEXENV_BUFFER_COLOR]);
+    Color prev = fragPrimary, buffer = fromRgba8(regs_[TEXENV_BUFFER_COLOR]);
     const uint32_t upd = regs_[TEXENV_UPDATE_BUFFER];
     for (int s = 0; s < 6; s++) {
         if (!stageActive_[s])
@@ -397,10 +476,11 @@ void Pica::fragment(int x, int y, float depth, const float *attr) {
         auto source = [&](unsigned id) -> Color {
             switch (id) {
             case 0:
-            case 1:
                 return primary;
+            case 1:
+                return fragPrimary;
             case 2:
-                return Color{0, 0, 0, 1};
+                return fragSecondary;
             case 3:
             case 4:
             case 5:

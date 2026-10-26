@@ -71,6 +71,9 @@ class Pica {
     void writeRegister(uint32_t id, uint32_t value, uint32_t mask = 0xF);
 
     uint32_t reg(uint32_t id) const { return regs_[id]; }
+    // Fragment lighting for one fragment from interpolated attributes: out = primary rgb, secondary rgb.
+    // Public so tests can check it without rasterizing. See docs/gpu.md for what is and is not modelled.
+    void shadeLighting(const float *attr, float out[6]) const;
     // Register file as it was at the latest draw that used fragment lighting (diagnostics).
     const std::array<uint32_t, kNumRegs> &litSnapshot() const { return litSnapshot_; }
     const PicaStats &stats() const { return stats_; }
@@ -102,7 +105,9 @@ class Pica {
     }
 
   private:
-    void runWords(const uint32_t *w, uint32_t n, unsigned depth, uint32_t srcVaddr);
+    void runWords(const uint32_t *w, uint32_t n, uint32_t srcVaddr);
+    bool jumpPending_ = false; // a CMDBUF_JUMP trigger was written: continue in the target buffer
+    uint32_t jumpVaddr_ = 0, jumpBytes_ = 0;
     uint32_t listVaddr_ = 0, listWord_ = 0; // position of the command being executed (diagnostics)
     void draw(bool indexed);
     bool prepareTarget();
@@ -133,7 +138,6 @@ class Pica {
     Vec4 fixedAttr_[12];
     bool finalized_ = false;
     bool rasterEnabled_ = true;
-    unsigned depth_ = 0; // nesting of command buffers being executed
 
     // state resolved at the start of a draw
     struct Fb {
