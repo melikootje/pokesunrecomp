@@ -410,6 +410,8 @@ int main(int argc, char **argv) {
     if (const char *vx = std::getenv("PROBE_VTX")) { // PROBE_VTX=<insns>:<vertexCount>:<count>
         static Gpu *vtxGpu;
         vtxGpu = gpu.get();
+        static uint8_t *vtxMem;
+        vtxMem = gm.base();
         static uint64_t from = 0, want = 0, num = 0, shown = 0;
         std::sscanf(vx, "%" SCNu64 ":%" SCNu64 ":%" SCNu64, &from, &want, &num);
         gpu->pica().setVertexHook([](uint32_t n, uint32_t i, const pica::Vec4 *in,
@@ -417,6 +419,16 @@ int main(int argc, char **argv) {
             if (g_progress < from || n != want || shown >= num)
                 return;
             shown++;
+            if (shown == 1) { // the command list that carried the latest NaN uniform
+                const pica::PicaStats &ps = vtxGpu->pica().stats();
+                std::printf("[vtx nanlist] %08x word %u uniform %u\n", ps.lastNanList, ps.lastNanWord,
+                            ps.lastNanReg);
+                for (uint32_t k = 0; k < 64 && ps.lastNanWord + k >= 20; k++) {
+                    uint32_t v;
+                    std::memcpy(&v, vtxMem + ps.lastNanList + (ps.lastNanWord - 20 + k) * 4, 4);
+                    std::printf("[vtx nl %3u] %08x\n", ps.lastNanWord - 20 + k, v);
+                }
+            }
             if (shown == 1) { // the shader's constants, entry point and the first words of its program
                 const pica::ShaderUnit &su = vtxGpu->pica().shader();
                 std::printf("[vtx shader] entry=%u\n", su.entry);
@@ -560,6 +572,8 @@ int main(int argc, char **argv) {
             " vsFail=%" PRIu64 " badAddr=%" PRIu64 " jumps=%" PRIu64 " jumpsRejected=%" PRIu64 "\n",
             p.commandLists, p.regWrites, p.draws, p.drawsSkipped, p.triangles, p.culled, p.clipped,
             p.fragments, p.shaderRuns, p.shaderFailures, p.badAddress, p.bufferJumps, p.jumpsRejected);
+        std::printf("pica nan uniforms=%" PRIu64 " first: list %08x word %u uniform %u\n", p.nanUniforms,
+                    p.firstNanList, p.firstNanWord, p.firstNanReg);
         std::printf("pica unsupported: lighting=%" PRIu64 " procTex=%" PRIu64 " fog=%" PRIu64
                     " shadow=%" PRIu64 " geoShader=%" PRIu64 " texFmt=%" PRIu64 " cube=%" PRIu64
                     " immediate=%" PRIu64 " logicOp=%" PRIu64 "\n",

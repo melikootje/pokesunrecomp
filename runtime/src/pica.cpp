@@ -94,7 +94,7 @@ void Pica::writeRegister(uint32_t id, uint32_t value, uint32_t mask) {
             std::memcpy(w.data(), mem_ + vaddr, bytes);
             const bool outerFinalized = finalized_;
             finalized_ = false;
-            runWords(w.data(), uint32_t(w.size()), depth_ + 1);
+            runWords(w.data(), uint32_t(w.size()), depth_ + 1, vaddr);
             finalized_ = outerFinalized; // a finalize inside the nested buffer ends only that buffer
         } else if (value) {
             if (stats_.jumpsRejected++ < 5)
@@ -112,6 +112,20 @@ void Pica::writeRegister(uint32_t id, uint32_t value, uint32_t mask) {
             uniformIndex_ = regs_[VSH_FLOATUNIFORM_CONFIG] & 0x7F;
         uniformWords_[uniformCount_++] = value;
         if (uniformCount_ == (f32 ? 4u : 3u)) {
+            if (f32) {
+                for (int k = 0; k < 4; k++)
+                    if (std::isnan(asFloat(uniformWords_[k]))) {
+                        stats_.lastNanList = listVaddr_;
+                        stats_.lastNanWord = listWord_;
+                        stats_.lastNanReg = uniformIndex_;
+                        if (!stats_.nanUniforms++) {
+                            stats_.firstNanList = listVaddr_;
+                            stats_.firstNanWord = listWord_;
+                            stats_.firstNanReg = uniformIndex_;
+                        }
+                        break;
+                    }
+            }
             if (uniformIndex_ < 96) {
                 Vec4 &u = shader_.fconst[uniformIndex_];
                 if (f32) { // words arrive as w, z, y, x
@@ -166,18 +180,21 @@ void Pica::processCommandList(uint32_t vaddr, uint32_t bytes) {
     std::vector<uint32_t> w(n);
     std::memcpy(w.data(), mem_ + vaddr, n * 4);
     finalized_ = false;
-    runWords(w.data(), n, 0);
+    runWords(w.data(), n, 0, vaddr);
 }
 
 // Executes (value, header) command pairs. Nested buffers (CMDBUF_JUMP) run to their end before the caller
 // continues.
-void Pica::runWords(const uint32_t *w, uint32_t n, unsigned depth) {
+void Pica::runWords(const uint32_t *w, uint32_t n, unsigned depth, uint32_t srcVaddr) {
     const unsigned outerDepth = depth_;
+    const uint32_t outerList = listVaddr_;
+    listVaddr_ = srcVaddr;
     depth_ = depth;
     for (uint32_t i = 0; i + 1 < n && !finalized_;) {
         const uint32_t param = w[i], header = w[i + 1];
         const uint32_t id = header & 0xFFFF, mask = (header >> 16) & 0xF, extra = (header >> 20) & 0xFF;
         const bool consecutive = header >> 31;
+        listWord_ = i;
         writeRegister(id, param, mask);
         for (uint32_t e = 0; e < extra && i + 2 + e < n && !finalized_; e++)
             writeRegister(consecutive ? id + 1 + e : id, w[i + 2 + e], mask);
@@ -187,6 +204,7 @@ void Pica::runWords(const uint32_t *w, uint32_t n, unsigned depth) {
         i += used;
     }
     depth_ = outerDepth;
+    listVaddr_ = outerList;
 }
 
 // ---------------------------------------------------------------------------------------------- vertex stage

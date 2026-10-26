@@ -100,6 +100,16 @@ class CfgService : public Service {
             std::memset(k_.guestPtr(out), 0, size);
             if (blk == 0xA0002 && size >= 1)
                 k_.guestPtr(out)[0] = uint8_t(o_.language); // language
+            if (blk == 0x50005 && size >= 32) {
+                // StereoCameraSettings: eight floats. The game divides by two of them (fields 3 and 4) while
+                // building its stereo cameras, so all-zero data turns into inf * 0 = NaN view matrices.
+                // The values are generic 3DS defaults used by other emulators; they are NOT read from a
+                // console (hypothesis: any finite non-zero data avoids the NaN, the real calibration only
+                // changes the parallax).
+                static const float kStereo[8] = {62.0f, 289.0f, 76.80000305175781f, 46.08000183105469f,
+                                                 10.0f, 5.0f,   55.58000183105469f, 21.569999694824219f};
+                std::memcpy(k_.guestPtr(out), kStereo, sizeof kStereo);
+            }
             r.reply(1, 2, kresult::Success);
             r.cmd[2] = (size << 14) | 0x402;
             r.cmd[3] = out;
@@ -385,6 +395,10 @@ class LoggedStubService : public Service {
 };
 
 } // namespace
+
+std::unique_ptr<Service> makeCfgService(const char *name, Kernel &k, const ServiceOptions &opt) {
+    return std::make_unique<CfgService>(name, opt, k);
+}
 
 void registerDefaultServices(Kernel &k, const ServiceOptions &opt) {
     k.registerService(std::make_unique<AptService>("APT:A", k));

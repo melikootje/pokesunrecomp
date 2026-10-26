@@ -30,6 +30,8 @@ void registerDefaultServices(Kernel &kernel, const ServiceOptions &opt = {});
 
 // ldr:ro (CRO/CRS loader).
 void registerLdrService(Kernel &kernel);
+// cfg:u / cfg:i without registering it (tests call it directly).
+std::unique_ptr<Service> makeCfgService(const char *name, Kernel &kernel, const ServiceOptions &opt = {});
 
 // gsp::Gpu (shared-memory queues, VBlank, GX commands). Maps VRAM and returns the GPU the service drives, so
 // the host can capture the screens.

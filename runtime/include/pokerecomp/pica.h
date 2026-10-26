@@ -23,6 +23,10 @@ struct PicaStats {
              unsupportedGeometryShader = 0, unsupportedTexFormat = 0, unsupportedCube = 0, badAddress = 0,
              unsupportedImmediate = 0, unsupportedLogicOp = 0;
     uint64_t bufferJumps = 0, jumpsRejected = 0; // nested command buffers executed / refused
+    // Float uniforms uploaded as NaN (a sign that the guest computed a bad matrix); where the first one came from.
+    uint64_t nanUniforms = 0;
+    uint32_t firstNanList = 0, firstNanWord = 0, firstNanReg = 0;
+    uint32_t lastNanList = 0, lastNanWord = 0, lastNanReg = 0;
 };
 
 // Interpolated vertex output slots.
@@ -92,7 +96,8 @@ class Pica {
     }
 
   private:
-    void runWords(const uint32_t *w, uint32_t n, unsigned depth);
+    void runWords(const uint32_t *w, uint32_t n, unsigned depth, uint32_t srcVaddr);
+    uint32_t listVaddr_ = 0, listWord_ = 0; // position of the command being executed (diagnostics)
     void draw(bool indexed);
     bool prepareTarget();
     bool fetchVertex(uint32_t index, Vec4 in[16]);
