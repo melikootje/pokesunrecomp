@@ -112,6 +112,8 @@ bool Gpu::physToVirt(uint32_t paddr, uint32_t *vaddr) {
 bool Gpu::memoryFill(uint32_t start, uint32_t end, uint32_t value, uint32_t control) {
     if (!(control & 1))
         return true; // not started
+    if (end == start)
+        return true; // an enabled but empty unit (the game does this with its unused second fill unit)
     if (end < start || !accessible(start, end - start)) {
         stats_.rejected++;
         return false;

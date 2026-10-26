@@ -139,17 +139,27 @@ class Gsp : public Service {
             k_.signalEvent(event_);
     }
 
+    void logRejected(const char *what, const uint32_t *w) {
+        if (rejectedLogged_++ < 10)
+            std::fprintf(stderr, "[gsp::Gpu] %s rejected: %08x %08x %08x %08x %08x %08x %08x\n", what, w[1],
+                         w[2], w[3], w[4], w[5], w[6], w[7]);
+    }
+    unsigned rejectedLogged_ = 0;
+
     // Runs the transfer-engine side of a GX command (word layout: 3dbrew, GSP shared memory).
     void executeGx(uint32_t id, const uint32_t *w) {
         if (gpu_->onGxCommand)
             gpu_->onGxCommand(id, w);
         switch (id) {
         case 0: // RequestDma(src, dst, size)
-            gpu_->dma(w[1], w[2], w[3]);
+            if (!gpu_->dma(w[1], w[2], w[3]))
+                logRejected("dma", w);
             break;
         case 2: // SetMemoryFill: two units; control words are packed in w7
-            gpu_->memoryFill(w[1], w[3], w[2], w[7] & 0xFFFF);
-            gpu_->memoryFill(w[4], w[6], w[5], w[7] >> 16);
+            if (!gpu_->memoryFill(w[1], w[3], w[2], w[7] & 0xFFFF) && (w[7] & 1))
+                logRejected("fill 0", w);
+            if (!gpu_->memoryFill(w[4], w[6], w[5], w[7] >> 16) && (w[7] >> 16 & 1))
+                logRejected("fill 1", w);
             break;
         case 3: // SetDisplayTransfer(src, dst, inDim, outDim, flags)
             if (!gpu_->displayTransfer(w[1], w[2], w[3], w[4], w[5]))
@@ -157,8 +167,9 @@ class Gsp : public Service {
                              w[2], w[3], w[4], w[5]);
             break;
         case 4: // SetTextureCopy(src, dst, size, in line|gap<<16, out line|gap<<16); units of 16 bytes
-            gpu_->textureCopy(w[1], w[2], w[3], (w[4] & 0xFFFF) * 16, (w[4] >> 16) * 16, (w[5] & 0xFFFF) * 16,
-                              (w[5] >> 16) * 16);
+            if (!gpu_->textureCopy(w[1], w[2], w[3], (w[4] & 0xFFFF) * 16, (w[4] >> 16) * 16,
+                                   (w[5] & 0xFFFF) * 16, (w[5] >> 16) * 16))
+                logRejected("texture copy", w);
             break;
         case 1: // ProcessCommandList(buffer, size)
             gpu_->pica().processCommandList(w[1], w[2]);

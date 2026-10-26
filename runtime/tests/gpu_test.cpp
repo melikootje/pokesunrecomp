@@ -91,6 +91,7 @@ int main() {
               f.at(kVram + 0x200)[2] == 0xEF);
         CHECK(f.gpu.memoryFill(kVram + 0x300, kVram + 0x310, 0xFFFFFFFF, 0x0200)); // start bit clear: no-op
         CHECK(f.w32(kVram + 0x300) == 0);
+        CHECK(f.gpu.memoryFill(0, 0, 0, 1)); // enabled with an empty range: nothing to do, not an error
         CHECK(!f.gpu.memoryFill(0x00000010, 0x00000020, 1, 1));                  // below application memory
         CHECK(!f.gpu.memoryFill(kVram + 0x5FFFF0, kVram + 0x600010, 1, 0x0201)); // past the end of VRAM
         CHECK(f.gpu.stats().fills == 3 && f.gpu.stats().rejected == 2);
