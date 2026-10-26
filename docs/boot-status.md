@@ -81,3 +81,20 @@ Result: Kukui's video message now renders with the 3D Pokémon in the frame (ver
 
 Remaining gaps: fragment lighting is not implemented (a large share of draws use it), buffer-jump chains hit the
 depth limit (256) about 1,400 times, DSP HLE only provides the frame counter, software rendering is slow.
+
+## Resolved: fatal error after "Three months later" (CreateMemoryBlock over owned memory)
+
+After the intro the game raised `ErrDisp` with `0xE0E01BF5`. That value is our own kernel's `InvalidAddress`: the
+nwm::UDS library (local wireless) calls `svcCreateMemoryBlock(addr != 0, ...)` over a buffer in its own heap.
+On hardware a non-zero address designates memory the process already owns; our kernel tried to allocate it and
+refused because the pages were committed. Fix: reuse the existing pages (`kernel_test` covers it). The game now
+reaches the player's bedroom (Mom's "first day under Alola's sun" dialogue).
+
+Method worth keeping: `PROBE_RECENT_IPC=1` prints the last 48 service requests (with results and file paths) when
+the run stops, and the `ErrorInfo` words of an `err:f` throw are logged.
+
+Open observations: the bedroom scene renders with a strong magenta tint (suspect: fragment lighting is not
+implemented, or a combiner source); `OpenFileDirectly` on archive `0x2345678A` (binary 16-byte archive path
+`00010302 000400db ffffff00 00000001`, 20-byte zero file path) is answered "file not found" and the game carries
+on; the display transfer `1f180000 -> 1f480000, 128x256, flags 0x02000020` (2x2 downscale with equal in/out
+dimensions) is rejected about 2,000 times.

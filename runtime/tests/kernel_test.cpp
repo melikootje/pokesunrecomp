@@ -216,6 +216,28 @@ int main() {
         testEventHandoff(&t2);
         CHECK(!t1.empty() && t1 == t2);
     }
+    // CreateMemoryBlock over memory the process already owns (a heap buffer passed to a service as shared
+    // memory) succeeds without allocating anything.
+    {
+        Env e;
+        Prog p;
+        p.a.mov(0, 3); // COMMIT
+        p.a.mov(1, 0);
+        p.a.mov(2, 0);
+        p.a.ldrc(3, 0x8000);
+        p.a.mov(4, 3);
+        p.a.svc(0x01); // -> r1 address
+        p.a.movr(5, 1);
+        p.a.add(0, 1, 0); // r0 = addr
+        p.a.ldrc(1, 0x1000);
+        p.a.mov(2, 3);
+        p.a.mov(3, 3);
+        p.a.svc(0x1E);
+        p.storeR0(kRes);
+        p.a.bx(14);
+        CHECK(runProg(e, p) == RunResult::AllExited);
+        CHECK(e.rd(kRes) == kresult::Success);
+    }
     // 3. timeout on the virtual clock
     {
         Env e;

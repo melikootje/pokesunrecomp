@@ -596,6 +596,9 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < top.size() && i < 40; i++)
             std::printf("[ipc] %8" PRIu64 "  %s\n", top[i].first, top[i].second.c_str());
     }
+    if (std::getenv("PROBE_RECENT_IPC"))
+        for (const std::string &l : kernel.recentIpc())
+            std::printf("[recent ipc] %s\n", l.c_str());
     static const char *names[] = {
         "all threads exited", "deadlock", "instruction limit", "process exit", "break", "trap", "fault"};
     std::printf("result: %s\n", names[int(rr)]);
@@ -622,6 +625,20 @@ int main(int argc, char **argv) {
                 std::printf("scan hit at %08x\n", unsigned(a));
                 found++;
             }
+    }
+    if (const char *rg =
+            std::getenv("PROBE_REGS")) { // PROBE_REGS=<hexLo>-<hexHi>[,..]: final PICA register values
+        for (const char *c = rg; *c;) {
+            unsigned lo = 0, hi = 0;
+            int n = 0;
+            if (std::sscanf(c, "%x-%x%n", &lo, &hi, &n) < 2)
+                break;
+            for (unsigned r = lo; r <= hi && r < 0x300; r++)
+                std::printf("[reg %03x] %08x\n", r, gpu->pica().reg(r));
+            c += n;
+            if (*c == ',')
+                c++;
+        }
     }
     if (const char *w = std::getenv("PROBE_WORDS")) { // comma-separated guest addresses (hex) to print
         std::string list = w;
@@ -693,8 +710,8 @@ int main(int argc, char **argv) {
     std::printf("unimplemented service commands: %zu\n", un.size());
     for (auto &u : un)
         std::printf("  %s %08x\n", u.first.c_str(), u.second);
-    // Fallback run starts (pcs whose predecessor was not also interpreted) become extra block entries on the
-    // next translate run: the "log hits to improve coverage" loop.
+    // Fallback run starts (pcs whose predecessor was not also interpreted) become extra block entries on
+    // the next translate run: the "log hits to improve coverage" loop.
     {
         const auto &hits = disp.fallbackHits();
         std::ofstream o("fallback_entries.txt");

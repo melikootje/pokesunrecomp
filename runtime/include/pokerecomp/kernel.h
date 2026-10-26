@@ -3,6 +3,7 @@
 // SVC ABI, scheduled cooperatively and deterministically on one host thread ("green threads").
 #include <cstdint>
 #include <functional>
+#include <deque>
 #include <map>
 #include <memory>
 #include <string>
@@ -102,6 +103,14 @@ class Kernel {
     uint64_t ticks() const { return now_; }
     // Number of requests per (service name, command header) over the whole run.
     const std::map<std::pair<std::string, uint32_t>, uint64_t> &ipcHistogram() const { return ipcHist_; }
+    // The last requests to services other than the high-rate gsp/hid/dsp ones, with their results (diagnostics).
+    const std::deque<std::string> &recentIpc() const { return recentIpc_; }
+    // Adds a line to that list (services record what a request meant, e.g. a file path).
+    void note(const std::string &line) {
+        recentIpc_.push_back(line);
+        if (recentIpc_.size() > 48)
+            recentIpc_.pop_front();
+    }
     const KernelStats &stats() const { return stats_; }
     uint32_t exitCode() const { return exitCode_; }
     uint32_t breakReason() const { return breakReason_; }
@@ -157,6 +166,7 @@ class Kernel {
     uint64_t now_ = 0;
     KernelStats stats_;
     std::map<std::pair<std::string, uint32_t>, uint64_t> ipcHist_;
+    std::deque<std::string> recentIpc_;
     uint32_t exitCode_ = 0, breakReason_ = 0;
     std::string stopMessage_;
     GuestFault fault_;

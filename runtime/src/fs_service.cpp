@@ -518,6 +518,7 @@ class FsService : public Service {
         if (!target(r, 2, 4, 5, 9, &a, &host, &rom))
             return;
         const uint32_t flags = r.cmd[6]; // bit 0 read, 1 write, 2 create
+        k_.note("OpenFile '" + (a->rom ? rom : host.string()) + "'");
         if (a->rom) {
             uint64_t fsz;
             if (!b_->romfsFileSize(rom, &fsz)) {
@@ -609,6 +610,26 @@ class FsService : public Service {
         if (SaveStore::resolve(dir, path, &host) != Err::Ok) {
             r.reply(1, 0, kInvalidPath);
             return;
+        }
+        {
+            static int logged = 0;
+            if (logged++ < 40)
+                std::fprintf(
+                    stderr,
+                    "[fs:USER] OpenFileDirectly archive %08x path '%s' flags %u words %08x %08x %08x "
+                    "%08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+                    id, path.c_str(), r.cmd[7], r.cmd[1], r.cmd[2], r.cmd[3], r.cmd[4], r.cmd[5], r.cmd[6],
+                    r.cmd[7], r.cmd[8], r.cmd[9], r.cmd[10], r.cmd[11], r.cmd[12]);
+        }
+        if (r.cmd[3] == 2 && r.cmd[5] == 2) { // binary paths: show them
+            uint32_t a[4] = {}, f[5] = {};
+            std::memcpy(a, k_.guestPtr(r.cmd[10]), std::min<uint32_t>(r.cmd[4], 16));
+            std::memcpy(f, k_.guestPtr(r.cmd[12]), std::min<uint32_t>(r.cmd[6], 20));
+            char line[200];
+            std::snprintf(line, sizeof line,
+                          "[fs:USER]   archive path %08x %08x %08x %08x file path %08x %08x %08x %08x %08x\n",
+                          a[0], a[1], a[2], a[3], f[0], f[1], f[2], f[3], f[4]);
+            std::fputs(line, stderr);
         }
         openHostFile(r, host, r.cmd[7]);
     }

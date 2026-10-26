@@ -360,6 +360,12 @@ class ErrService : public Service {
                           r.cmd[3], r.cmd[1], r.cmd[4]);
             if (log_)
                 std::fprintf(stderr, "[err:f] %s\n", msg);
+            if (log_) {
+                std::fprintf(stderr, "[err:f] ErrorInfo words:");
+                for (int i = 1; i <= 16; i++)
+                    std::fprintf(stderr, " %08x", r.cmd[i]);
+                std::fprintf(stderr, "\n");
+            }
             r.reply(1, 0, kresult::Success);
             k_.stopWithReason(0xFE, msg);
             return;

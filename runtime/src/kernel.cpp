@@ -979,10 +979,14 @@ bool Kernel::Impl::handleSvc(Thread *t) {
         b->addr = r[0];
         b->size = Kernel::Impl::pageUp(r[1]);
         if (b->addr) {
-            uint32_t out;
-            const uint32_t res = I.commit(b->addr, b->size, false, &out);
-            if (res != kresult::Success)
-                return fail(res);
+            // A non-zero address designates memory the process already owns (e.g. a heap buffer handed to a
+            // service as shared memory): nothing is allocated, the block just refers to those pages.
+            if (!I.overlaps(b->addr, b->size)) {
+                uint32_t out;
+                const uint32_t res = I.commit(b->addr, b->size, false, &out);
+                if (res != kresult::Success)
+                    return fail(res);
+            }
             b->mapped = true;
         }
         r[1] = I.add(b);
@@ -1199,6 +1203,17 @@ bool Kernel::Impl::handleSvc(Thread *t) {
             if (K.log_)
                 K.log_(tb);
             req.reply(1, 0, kresult::InvalidAddress);
+        }
+        {
+            const std::string svc = ses.service->name();
+            if (svc != "gsp::Gpu" && svc != "hid:USER" && svc != "dsp::DSP" &&
+                !(svc == "fs:File" && req.header() == 0x08020082)) {
+                char line[96];
+                std::snprintf(line, sizeof line, "%s %08x -> %08x", svc.c_str(), req.header(), req.cmd[1]);
+                K.recentIpc_.push_back(line);
+                if (K.recentIpc_.size() > 48)
+                    K.recentIpc_.pop_front();
+            }
         }
         r[0] = kresult::Success;
         I.wakeAll();
